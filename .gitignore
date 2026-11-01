@@ -1,0 +1,7 @@
+/build/
+/vcpkg_installed/
+/out/
+/.vs/
+/.vscode/
+/CMakeUserPresets.json
+/build-configure.log
