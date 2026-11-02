@@ -26,11 +26,13 @@
 #define HWYMP_FLOAT_H_
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 #include "hwymp/limb_ops.h"
 
@@ -240,6 +242,74 @@ HWYMP_ALWAYS_INLINE limb_t IntegerSqrt(limb_t hi, limb_t lo,
 }  // namespace detail
 
 template <int P, int E>
+class Float;
+
+namespace detail {
+
+template <class T>
+inline constexpr bool kIsFloat = false;
+template <int P, int E>
+inline constexpr bool kIsFloat<Float<P, E>> = true;
+
+// Built-in types that convert to and from Float. bool is left out, so that a
+// Float never silently becomes 0 or 1.
+template <class T>
+concept Arithmetic = std::is_arithmetic_v<T> && !std::is_same_v<T, bool>;
+
+template <class T>
+concept Integer = std::is_integral_v<T> && !std::is_same_v<T, bool>;
+
+template <class T>
+concept BinaryFloatingPoint = std::is_floating_point_v<T> &&
+                              std::numeric_limits<T>::radix == 2 &&
+                              std::numeric_limits<T>::has_infinity;
+
+// The Float with the same values as a built-in floating-point type: float is
+// Float<24, 8>, double is Float<53, 11>, and the x87 long double is
+// Float<64, 15>.
+template <BinaryFloatingPoint T>
+struct NativeFormatOf {
+  static constexpr int kDigits = std::numeric_limits<T>::digits;
+  static constexpr int kExponentBits =
+      std::bit_width(
+          static_cast<unsigned>(std::numeric_limits<T>::max_exponent));
+  using type = Float<kDigits, kExponentBits>;
+  // Whether T is laid out as the interchange encoding of `type`, which lets
+  // its bits be copied directly.
+  static constexpr bool kInterchange =
+      (sizeof(T) == 4 || sizeof(T) == 8) &&
+      sizeof(T) * 8 == static_cast<std::size_t>(kDigits + kExponentBits);
+};
+
+template <class T>
+using NativeFormat = typename NativeFormatOf<T>::type;
+
+template <class T>
+using SameSizeUnsigned =
+    std::conditional_t<sizeof(T) == 4, std::uint32_t, std::uint64_t>;
+
+// Whether every value of T converts exactly to Float<P, E>.
+template <int P, int E, class T>
+constexpr bool ExactlyConvertible() {
+  constexpr int kEmax = (1 << (E - 1)) - 1;
+  if constexpr (kIsFloat<T>) {
+    return T::kPrecision <= P && T::kExponentBits <= E;
+  } else if constexpr (std::is_integral_v<T>) {
+    return P >= std::numeric_limits<T>::digits &&
+           kEmax >= std::numeric_limits<T>::digits;
+  } else {
+    return NativeFormatOf<T>::kDigits <= P &&
+           NativeFormatOf<T>::kExponentBits <= E;
+  }
+}
+
+// Gives the free conversion functions and the string conversions access to the
+// internals of every Float.
+struct FloatAccess;
+
+}  // namespace detail
+
+template <int P, int E>
 class Float {
   static_assert(P >= 3, "NaN encodings need at least two trailing bits");
   static_assert(E >= 2 && E <= 29,
@@ -318,6 +388,48 @@ class Float {
     InsertBits(bits, P + E - 1, 1, negative_ ? 1 : 0);
     return bits;
   }
+
+  // --- Conversions ---
+  //
+  // Constructing a Float from a built-in arithmetic type or from another format
+  // rounds to nearest-even. The constructors are implicit when they are always
+  // exact, as from double or int64_t to binary128. The free functions convert()
+  // and to_integer() below take a Context for the other modes and for flags.
+  //
+  // NaN payloads keep their most significant bits, so a NaN that is widened and
+  // narrowed again comes back unchanged. Signaling NaNs are quieted and raise
+  // invalid.
+
+  // Whether every value of T converts exactly.
+  template <class T>
+  static constexpr bool kExactFrom = detail::ExactlyConvertible<P, E, T>();
+
+  template <detail::Arithmetic T>
+  explicit(!kExactFrom<T>) Float(T value) noexcept
+      : Float(ConvertFrom(value, detail::NearestEnv{})) {}
+
+  template <int P2, int E2>
+    requires(P2 != P || E2 != E)
+  explicit(!kExactFrom<Float<P2, E2>>)
+      Float(const Float<P2, E2>& value) noexcept
+      : Float(ConvertFormat(value, detail::NearestEnv{})) {}
+
+  // Rounds to nearest-even.
+  template <detail::BinaryFloatingPoint T>
+  explicit operator T() const noexcept {
+    return ConvertTo<T>(detail::NearestEnv{});
+  }
+
+  // Truncates toward zero and saturates: NaN converts to 0, and values beyond
+  // the range of I to its minimum or maximum.
+  template <detail::Integer I>
+  explicit operator I() const noexcept {
+    return ToInteger<I>(Rounding::kTowardZero, false,
+                        detail::NearestEnv{});
+  }
+
+  // True for anything but zero, NaN included, as for the built-in types.
+  explicit operator bool() const noexcept { return !is_zero(); }
 
   // --- Special values ---
 
@@ -556,9 +668,9 @@ class Float {
     return ScalbnImpl(x, n, detail::ContextEnv{context});
   }
 
-  static constexpr int kIlogbZero = std::numeric_limits<int>::min();
-  static constexpr int kIlogbInfinity = std::numeric_limits<int>::max();
-  static constexpr int kIlogbNaN = std::numeric_limits<int>::max();
+  static constexpr int kIlogbZero = (std::numeric_limits<int>::min)();
+  static constexpr int kIlogbInfinity = (std::numeric_limits<int>::max)();
+  static constexpr int kIlogbNaN = (std::numeric_limits<int>::max)();
 
   // The exponent of x as an integer, with subnormals treated as normalized.
   // Zero, infinity and NaN return the constants above and raise invalid.
@@ -619,6 +731,10 @@ class Float {
   }
 
  private:
+  template <int, int>
+  friend class Float;
+  friend struct detail::FloatAccess;
+
   static constexpr int kSpareBits = static_cast<int>(kLimbs) * kLimbBits - P;
   static constexpr limb_t kTopBit = limb_t{1} << (kLimbBits - 1);
   static constexpr limb_t kQuietBit = kTopBit >> 1;
@@ -626,11 +742,11 @@ class Float {
   // Exponent values that mark non-numbers. They lie far outside the range of
   // any regular value and keep the ordering zero < regular < infinity.
   static constexpr std::int32_t kExpZero =
-      std::numeric_limits<std::int32_t>::min();
+      (std::numeric_limits<std::int32_t>::min)();
   static constexpr std::int32_t kExpInfinity =
-      std::numeric_limits<std::int32_t>::max() - 1;
+      (std::numeric_limits<std::int32_t>::max)() - 1;
   static constexpr std::int32_t kExpNaN =
-      std::numeric_limits<std::int32_t>::max();
+      (std::numeric_limits<std::int32_t>::max)();
 
   // A significand with the extra limb that holds the bits below the last limb:
   // `rest` has the highest of those bits at its top, and its lowest bit is
@@ -870,8 +986,8 @@ class Float {
 
   // --- Addition and subtraction ---
 
-  // Shifts `small` right by distance >= 0, jamming lost bits into `rest`.
-  HWYMP_ALWAYS_INLINE static Extended AlignRight(const Limbs& small,
+  // Shifts `lesser` right by distance >= 0, jamming lost bits into `rest`.
+  HWYMP_ALWAYS_INLINE static Extended AlignRight(const Limbs& lesser,
                                                  std::int32_t distance) noexcept {
     constexpr int kWords = static_cast<int>(kLimbs);
     if (distance >= (kWords + 1) * kLimbBits) [[unlikely]] {
@@ -884,12 +1000,12 @@ class Float {
       // By far the most common case, with no limbs to move.
       const int complement = kLimbBits - 1 - bits;
       Extended result;
-      result.rest = (small[0] << 1) << complement;
+      result.rest = (lesser[0] << 1) << complement;
       for (std::size_t i = 0; i + 1 < kLimbs; ++i) {
         result.limbs[i] =
-            (small[i] >> bits) | ((small[i + 1] << 1) << complement);
+            (lesser[i] >> bits) | ((lesser[i + 1] << 1) << complement);
       }
-      result.limbs[kLimbs - 1] = small[kLimbs - 1] >> bits;
+      result.limbs[kLimbs - 1] = lesser[kLimbs - 1] >> bits;
       return result;
     }
 
@@ -898,11 +1014,11 @@ class Float {
     for (int i = 0; i + words <= kWords; ++i) {
       const int source = i + words - 1;
       wide[static_cast<std::size_t>(i)] =
-          source >= 0 ? small[static_cast<std::size_t>(source)] : 0;
+          source >= 0 ? lesser[static_cast<std::size_t>(source)] : 0;
     }
     limb_t lost = 0;
     for (int i = 0; i + 1 < words; ++i) {
-      lost |= small[static_cast<std::size_t>(i)];
+      lost |= lesser[static_cast<std::size_t>(i)];
     }
     // Shifting in two steps keeps a bit count of zero well defined, so no
     // branch is needed for it.
@@ -951,14 +1067,14 @@ class Float {
 
     const bool swap = a.exponent_ < b.exponent_;
     const Limbs* big = swap ? &b.limbs_ : &a.limbs_;
-    const Limbs* small = swap ? &a.limbs_ : &b.limbs_;
+    const Limbs* lesser = swap ? &a.limbs_ : &b.limbs_;
     std::int32_t exponent = swap ? b.exponent_ : a.exponent_;
     std::int32_t distance = swap ? b.exponent_ - a.exponent_
                                  : a.exponent_ - b.exponent_;
     bool negative = (swap ? b_sign : a.negative_) != 0;
 
     if (a.negative_ == b_sign) {
-      Extended sum = AlignRight(*small, distance);
+      Extended sum = AlignRight(*lesser, distance);
       carry_t carry = 0;
       for (std::size_t i = 0; i < kLimbs; ++i) {
         sum.limbs[i] = adc((*big)[i], sum.limbs[i], carry);
@@ -979,17 +1095,17 @@ class Float {
     }
 
     if (distance == 0) {
-      const int order = detail::CompareLimbs(*big, *small);
+      const int order = detail::CompareLimbs(*big, *lesser);
       if (order == 0) return Zero(env.rounding() == Rounding::kDown);
       if (order < 0) {
         const Limbs* temporary = big;
-        big = small;
-        small = temporary;
+        big = lesser;
+        lesser = temporary;
         negative = !negative;
       }
     }
 
-    Extended difference = AlignRight(*small, distance);
+    Extended difference = AlignRight(*lesser, distance);
     carry_t borrow = 0;
     difference.rest = sbb(0, difference.rest, borrow);
     for (std::size_t i = 0; i < kLimbs; ++i) {
@@ -1458,7 +1574,7 @@ class Float {
     const std::array<limb_t, 2 * kLimbs> exact =
         MultiplySignificands(a.limbs_, b.limbs_);
     Wide big{};
-    Wide small{};
+    Wide lesser{};
     for (std::size_t i = 0; i < 2 * kLimbs; ++i) big[i + 1] = exact[i];
     std::int32_t big_exponent = a.exponent_ + b.exponent_ + 1;
     if ((big[kWide - 1] & kTopBit) == 0) {
@@ -1466,7 +1582,7 @@ class Float {
       --big_exponent;
     }
     for (std::size_t i = 0; i < kLimbs; ++i) {
-      small[i + kLimbs + 1] = c.limbs_[i];
+      lesser[i + kLimbs + 1] = c.limbs_[i];
     }
     std::int32_t small_exponent = c.exponent_;
     bool big_negative = product_negative;
@@ -1474,10 +1590,10 @@ class Float {
 
     if (big_exponent < small_exponent ||
         (big_exponent == small_exponent &&
-         detail::CompareLimbs(big, small) < 0)) {
+         detail::CompareLimbs(big, lesser) < 0)) {
       const Wide temporary = big;
-      big = small;
-      small = temporary;
+      big = lesser;
+      lesser = temporary;
       const std::int32_t exponent = big_exponent;
       big_exponent = small_exponent;
       small_exponent = exponent;
@@ -1489,14 +1605,14 @@ class Float {
     const std::int32_t distance = big_exponent - small_exponent;
     constexpr int kWideBits = static_cast<int>(kWide) * kLimbBits;
     if (distance >= kWideBits) {
-      small.fill(0);
-      small[0] = 1;
+      lesser.fill(0);
+      lesser[0] = 1;
     } else if (distance > 0) {
       const int count = distance;
-      Wide lost = small;
+      Wide lost = lesser;
       detail::ShiftLeft(lost, kWideBits - count);
-      detail::ShiftRight(small, count);
-      small[0] |= detail::IsZero(lost) ? 0 : 1;
+      detail::ShiftRight(lesser, count);
+      lesser[0] |= detail::IsZero(lost) ? 0 : 1;
     }
 
     std::int32_t exponent = big_exponent;
@@ -1504,7 +1620,7 @@ class Float {
     if (big_negative == small_negative) {
       carry_t carry = 0;
       for (std::size_t i = 0; i < kWide; ++i) {
-        total[i] = adc(big[i], small[i], carry);
+        total[i] = adc(big[i], lesser[i], carry);
       }
       if (carry != 0) {
         const limb_t sticky = total[0] & 1;
@@ -1516,7 +1632,7 @@ class Float {
     } else {
       carry_t borrow = 0;
       for (std::size_t i = 0; i < kWide; ++i) {
-        total[i] = sbb(big[i], small[i], borrow);
+        total[i] = sbb(big[i], lesser[i], borrow);
       }
       if (detail::IsZero(total)) return Zero(env.rounding() == Rounding::kDown);
       int leading = 0;
@@ -1765,6 +1881,186 @@ class Float {
                   detail::SilentEnv{Rounding::kNearestEven});
   }
 
+  // --- Conversions ---
+
+  // Rounds the value limbs / 2^(64 count - 1) * 2^exponent, where `limbs` has
+  // `count` limbs, least significant first, and its top bit set. `sticky` adds
+  // an infinitesimal below the last limb: it marks a value known to be inexact.
+  template <class Env>
+  static Float RoundSignificand(bool negative, std::int64_t exponent,
+                                const limb_t* limbs, std::size_t count,
+                                bool sticky, const Env& env) noexcept {
+    Extended value;
+    for (std::size_t i = 0; i < kLimbs; ++i) {
+      const std::size_t from_top = kLimbs - i;
+      value.limbs[i] = from_top <= count ? limbs[count - from_top] : 0;
+    }
+    value.rest = 0;
+    if (count > kLimbs) {
+      value.rest = limbs[count - kLimbs - 1];
+      for (std::size_t i = 0; i + kLimbs + 1 < count; ++i) {
+        sticky = sticky || limbs[i] != 0;
+      }
+    }
+    if (sticky) value.rest |= 1;
+    // At or above 2^(kEmax + 1) every mode overflows. Far below the subnormals
+    // the exponent is clamped, which keeps it within int32_t and changes
+    // nothing, as with scalbn.
+    if (exponent > kEmax) return Overflow(negative, env);
+    const std::int64_t limit = -(std::int64_t{1} << (E + 1)) - P;
+    if (exponent < limit) exponent = limit;
+    return Finish(negative, static_cast<std::int32_t>(exponent), value, env);
+  }
+
+  template <int P2, int E2, class Env>
+  static Float ConvertFormat(const Float<P2, E2>& x, const Env& env) noexcept {
+    using Source = Float<P2, E2>;
+    const bool negative = x.negative_ != 0;
+    if (x.is_nan()) {
+      if (x.is_signaling()) env.raise(kFlagInvalid);
+      // Both significands are left-aligned, so the payload keeps its top bits.
+      Limbs limbs;
+      for (std::size_t i = 0; i < kLimbs; ++i) {
+        const std::size_t from_top = kLimbs - i;
+        limbs[i] = from_top <= Source::kLimbs
+                       ? x.limbs_[Source::kLimbs - from_top]
+                       : 0;
+      }
+      if constexpr (kSpareBits != 0) limbs[0] &= ~LowMask(kSpareBits);
+      SetQuietBit(limbs);
+      return FromParts(negative, kExpNaN, limbs);
+    }
+    if (x.is_inf()) return Infinity(negative);
+    if (x.is_zero()) return Zero(negative);
+    return RoundSignificand(negative, x.exponent_, x.limbs_.data(),
+                            Source::kLimbs, false, env);
+  }
+
+  // From a built-in arithmetic type.
+  template <detail::Arithmetic T, class Env>
+  static Float ConvertFrom(T value, const Env& env) noexcept {
+    if constexpr (std::is_integral_v<T>) {
+      static_assert(sizeof(T) <= sizeof(limb_t), "Integers up to 64 bits");
+      bool negative = false;
+      limb_t magnitude;
+      if constexpr (std::is_signed_v<T>) {
+        negative = value < 0;
+        // Negating modulo 2^64 handles the most negative value too.
+        magnitude = static_cast<limb_t>(static_cast<std::int64_t>(value));
+        if (negative) magnitude = limb_t{0} - magnitude;
+      } else {
+        magnitude = static_cast<limb_t>(value);
+      }
+      if (magnitude == 0) return Zero(false);
+      const int leading = countl_zero(magnitude);
+      const limb_t normalized = magnitude << leading;
+      return RoundSignificand(negative, kLimbBits - 1 - leading, &normalized,
+                              1, false, env);
+    } else {
+      return ConvertFormat(DecodeNative(value), env);
+    }
+  }
+
+  // The exact Float equivalent of a built-in floating-point value.
+  template <detail::BinaryFloatingPoint T>
+  static detail::NativeFormat<T> DecodeNative(T value) noexcept {
+    using Native = detail::NativeFormat<T>;
+    if constexpr (detail::NativeFormatOf<T>::kInterchange) {
+      using Unsigned = detail::SameSizeUnsigned<T>;
+      return Native::from_bits(
+          {static_cast<limb_t>(std::bit_cast<Unsigned>(value))});
+    } else {
+      // Such as the x87 extended type, with its explicit leading bit, or a
+      // long double that is binary128. Payloads are not portable here, so a
+      // NaN becomes the default NaN.
+      const bool negative = std::signbit(value);
+      if (std::isnan(value)) return Native::QuietNaN(negative);
+      if (std::isinf(value)) return Native::Infinity(negative);
+      if (value == 0) return Native::Zero(negative);
+      int exponent = 0;
+      // Exact: m is in [1/2, 1), and splitting off whole limbs loses nothing.
+      T m = std::frexp(std::fabs(value), &exponent);
+      typename Native::Limbs limbs;
+      for (std::size_t i = Native::kLimbs; i-- > 0;) {
+        m = std::ldexp(m, kLimbBits);
+        const limb_t chunk = static_cast<limb_t>(m);
+        m -= static_cast<T>(chunk);
+        limbs[i] = chunk;
+      }
+      return Native::FromParts(negative, exponent - 1, limbs);
+    }
+  }
+
+  // To a built-in floating-point type.
+  template <detail::BinaryFloatingPoint T, class Env>
+  T ConvertTo(const Env& env) const noexcept {
+    using Native = detail::NativeFormat<T>;
+    const Native x = Native::ConvertFormat(*this, env);
+    if constexpr (detail::NativeFormatOf<T>::kInterchange) {
+      using Unsigned = detail::SameSizeUnsigned<T>;
+      return std::bit_cast<T>(static_cast<Unsigned>(x.to_bits()[0]));
+    } else {
+      const bool negative = x.signbit();
+      T result;
+      if (x.is_nan()) {
+        result = std::numeric_limits<T>::quiet_NaN();
+      } else if (x.is_inf()) {
+        result = std::numeric_limits<T>::infinity();
+      } else if (x.is_zero()) {
+        result = 0;
+      } else {
+        // Every partial sum lies on T's grid, so the additions are exact.
+        result = 0;
+        for (std::size_t i = Native::kLimbs; i-- > 0;) {
+          const int scale =
+              x.exponent_ - (kLimbBits - 1) -
+              static_cast<int>(Native::kLimbs - 1 - i) * kLimbBits;
+          result += std::ldexp(static_cast<T>(x.limbs_[i]), scale);
+        }
+      }
+      return negative ? -result : result;
+    }
+  }
+
+  // Rounds in `mode`, then converts to I. NaN and values outside I's range
+  // raise invalid and saturate, with NaN giving 0. Inexact is raised only when
+  // `exact` is set.
+  template <detail::Integer I, class Env>
+  I ToInteger(Rounding mode, bool exact, const Env& env) const noexcept {
+    static_assert(sizeof(I) <= sizeof(limb_t), "Integers up to 64 bits");
+    using Limits = std::numeric_limits<I>;
+    const bool negative = negative_ != 0;
+    const I saturated = negative ? (Limits::min)() : (Limits::max)();
+    if (is_nan()) {
+      env.raise(kFlagInvalid);
+      return 0;
+    }
+    Context local{mode, 0};
+    const Float rounded = RoundToIntegralImpl(*this, detail::ContextEnv{local});
+    if (rounded.is_inf()) {
+      env.raise(kFlagInvalid);
+      return saturated;
+    }
+    limb_t magnitude = 0;
+    if (!rounded.is_zero()) {
+      if (rounded.exponent_ >= kLimbBits) {
+        env.raise(kFlagInvalid);
+        return saturated;
+      }
+      // An integer below 2^64 lies entirely in the top limb.
+      magnitude =
+          rounded.limbs_[kLimbs - 1] >> (kLimbBits - 1 - rounded.exponent_);
+      const limb_t limit =
+          static_cast<limb_t>((Limits::max)()) + (negative ? 1 : 0);
+      if ((negative && !Limits::is_signed) || magnitude > limit) {
+        env.raise(kFlagInvalid);
+        return saturated;
+      }
+    }
+    if (exact) env.raise(local.flags & kFlagInexact);
+    return static_cast<I>(negative ? limb_t{0} - magnitude : magnitude);
+  }
+
   // --- Comparison ---
 
   static std::partial_ordering Order(const Float& a, const Float& b) noexcept {
@@ -1794,6 +2090,84 @@ class Float {
 using binary128 = Float<113, 15>;
 using binary256 = Float<237, 19>;
 using binary512 = Float<489, 23>;
+
+namespace detail {
+
+struct FloatAccess {
+  template <class To, class From, class Env>
+  static To Convert(const From& x, const Env& env) noexcept {
+    if constexpr (kIsFloat<To>) {
+      if constexpr (kIsFloat<From>) {
+        return To::ConvertFormat(x, env);
+      } else {
+        return To::ConvertFrom(x, env);
+      }
+    } else {
+      return x.template ConvertTo<To>(env);
+    }
+  }
+
+  template <class I, int P, int E, class Env>
+  static I ToInteger(const Float<P, E>& x, Rounding mode, bool exact,
+                     const Env& env) noexcept {
+    return x.template ToInteger<I>(mode, exact, env);
+  }
+
+  // See Float::RoundSignificand.
+  template <class F, class Env>
+  static F Round(bool negative, std::int64_t exponent, const limb_t* limbs,
+                 std::size_t count, bool sticky, const Env& env) noexcept {
+    return F::RoundSignificand(negative, exponent, limbs, count, sticky, env);
+  }
+};
+
+template <class To, class From>
+concept Convertible =
+    (kIsFloat<To> && (kIsFloat<From> || Arithmetic<From>)) ||
+    (BinaryFloatingPoint<To> && kIsFloat<From>);
+
+}  // namespace detail
+
+// Converts between formats, and between a Float and a built-in arithmetic
+// type, rounding in context.rounding and raising flags. Built-in targets must
+// be floating-point; integers go through to_integer().
+template <class To, class From>
+  requires detail::Convertible<To, From>
+To convert(const From& x, Context& context) noexcept {
+  return detail::FloatAccess::Convert<To>(x, detail::ContextEnv{context});
+}
+
+// As above, rounding to nearest-even without flags.
+template <class To, class From>
+  requires detail::Convertible<To, From>
+To convert(const From& x) noexcept {
+  return detail::FloatAccess::Convert<To>(x, detail::NearestEnv{});
+}
+
+// IEEE 754 convertToInteger: rounds x in `mode`, then converts to I. NaN and
+// values outside I's range raise invalid and saturate, with NaN giving 0. A
+// rounded result raises no inexact flag.
+template <detail::Integer I, int P, int E>
+I to_integer(const Float<P, E>& x, Rounding mode, Context& context) noexcept {
+  return detail::FloatAccess::ToInteger<I>(x, mode, false,
+                                           detail::ContextEnv{context});
+}
+
+// As above, without flags.
+template <detail::Integer I, int P, int E>
+I to_integer(const Float<P, E>& x, Rounding mode) noexcept {
+  return detail::FloatAccess::ToInteger<I>(x, mode, false,
+                                           detail::NearestEnv{});
+}
+
+// IEEE 754 convertToIntegerExact: like to_integer, but an inexact result
+// raises inexact.
+template <detail::Integer I, int P, int E>
+I to_integer_exact(const Float<P, E>& x, Rounding mode,
+                   Context& context) noexcept {
+  return detail::FloatAccess::ToInteger<I>(x, mode, true,
+                                           detail::ContextEnv{context});
+}
 
 }  // namespace hwymp
 

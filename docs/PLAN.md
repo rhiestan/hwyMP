@@ -30,7 +30,8 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    scalbn, logb: done. Division and square root are 1.4x to 3.5x faster than
    MPFR. FMA is untuned and level with MPFR at binary512.
 4. Correctly rounded conversions: float, double, integers, between formats, and
-   strings in both directions.
+   strings in both directions: done. Decimal printing and parsing are faster
+   than MPFR at every size, with shortest round-trip output as well.
 5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests.
 6. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
    AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through

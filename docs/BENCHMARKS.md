@@ -64,6 +64,51 @@ square root.
 | binary256 | 23.82 | 30.16 | 28.07 |
 | binary512 | 28.13 | 57.80 | 40.56 |
 
+## Strings
+
+`bench/bench_strings.cpp`, measured on 2026-11-02 with the same setup: best of
+15 runs over 512 random values, either near 1 (binary exponents within ±8) or
+"wide" (binary exponents within ±1000). Nanoseconds per conversion.
+
+- **print:** enough significant digits to read back (36, 73 and 149), in
+  scientific notation: `to_chars` with a precision, `mpfr_get_str`, and Boost's
+  `str`.
+- **shortest:** the shortest string that reads back. Only hwyMP offers this.
+- **parse:** reading the shortest strings back: `from_chars`, `mpfr_strtofr`,
+  and Boost's constructor from a string.
+
+All hwyMP conversions are correctly rounded and raise the IEEE flags.
+
+| Format | Values | Library | print | shortest | parse |
+|---|---|---|---:|---:|---:|
+| binary128 | near 1 | hwyMP | 341 | 966 | 144 |
+| | | MPFR | 480 | | 347 |
+| | | Boost | 784 | | 824 |
+| binary256 | near 1 | hwyMP | 452 | 1387 | 212 |
+| | | MPFR | 598 | | 472 |
+| | | Boost | 1501 | | 1554 |
+| binary512 | near 1 | hwyMP | 779 | 2110 | 479 |
+| | | MPFR | 857 | | 667 |
+| | | Boost | 4089 | | 3644 |
+| binary128 | wide | hwyMP | 350 | 929 | 150 |
+| | | MPFR | 577 | | 397 |
+| | | Boost | 1316 | | 976 |
+| binary256 | wide | hwyMP | 477 | 1251 | 216 |
+| | | MPFR | 688 | | 508 |
+| | | Boost | 2137 | | 1645 |
+| binary512 | wide | hwyMP | 805 | 2279 | 474 |
+| | | MPFR | 938 | | 684 |
+| | | Boost | 4627 | | 3768 |
+
+Conversions are computed with interval arithmetic in a slightly wider `Float`,
+which decides nearly every case; the rest fall back to exact big-integer
+arithmetic. That fallback is what costs time near the far ends of binary512's
+exponent range, where its integers have millions of bits. There, a decimal
+string within a relative 10^-170 of a rounding boundary takes tens of
+milliseconds, and so does output with more than about 780 significant digits.
+Fixed notation of such values has up to 1.3 million digits and is slow in
+proportion.
+
 ## Batch prototype
 
 `bench/bench_batch.cpp` runs binary256 on Highway's AVX2 target with 4 lanes, in

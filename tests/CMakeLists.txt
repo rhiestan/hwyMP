@@ -40,6 +40,9 @@ endfunction()
 
 hwymp_add_test(limb_ops_test)
 hwymp_add_test(float_test)
+hwymp_add_test(convert_test)
+hwymp_add_test(charconv_test)
+hwymp_add_test(windows_header_test)
 hwymp_add_test(deps_smoke_test hwymp_eigen)
 
 if(HWYMP_ENABLE_ORACLE)
@@ -57,4 +60,5 @@ if(HWYMP_ENABLE_ORACLE)
 
   hwymp_add_test(oracle_smoke_test hwymp_oracle)
   hwymp_add_test(float_oracle_test hwymp_oracle)
+  hwymp_add_test(convert_oracle_test hwymp_oracle)
 endif()

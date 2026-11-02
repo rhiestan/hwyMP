@@ -3,6 +3,30 @@
 Fixed-size IEEE 754 floating-point types for C++, built for speed at 128 to 512
 bits. Work in progress: see [docs/PLAN.md](docs/PLAN.md).
 
+## Use
+
+```cpp
+#include "hwymp/charconv.h"  // Strings and streams; includes hwymp/float.h.
+
+using hwymp::binary256;
+
+binary256 x = 1.5;                        // Exact conversions are implicit.
+binary256 third = binary256(1) / binary256(3);
+double d = static_cast<double>(third);    // Rounds to nearest-even.
+
+hwymp::Context context{hwymp::Rounding::kUp};
+float f = hwymp::convert<float>(third, context);  // Any mode, with flags.
+long n = hwymp::to_integer<long>(x, hwymp::Rounding::kNearestEven);
+
+std::string text = hwymp::to_string(third);       // Shortest round trip.
+binary256 y = hwymp::from_string<binary256>("0.1");
+std::cout << std::setprecision(40) << y << '\n';
+```
+
+`to_chars` and `from_chars` follow `<charconv>`, with an optional `Context`.
+The formats are `binary128`, `binary256` and `binary512`, or any
+`hwymp::Float<P, E>`.
+
 ## Building
 
 Requires CMake 3.25 or later, Ninja and a C++20 compiler. Sibling `../highway`

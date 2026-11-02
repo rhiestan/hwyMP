@@ -20,6 +20,14 @@ target_include_directories(bench_scalar SYSTEM PRIVATE
 target_compile_options(bench_scalar PRIVATE
   $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)
 
+add_executable(bench_strings bench_strings.cpp)
+target_link_libraries(bench_strings PRIVATE hwymp
+  "${HWYMP_MPFR_LIBRARY}" "${HWYMP_GMP_LIBRARY}")
+target_include_directories(bench_strings SYSTEM PRIVATE
+  "${HWYMP_BOOST_DIR}" "${HWYMP_GMP_INCLUDE_DIR}" "${HWYMP_MPFR_INCLUDE_DIR}")
+target_compile_options(bench_strings PRIVATE
+  $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)
+
 add_executable(bench_batch bench_batch.cpp)
 target_link_libraries(bench_batch PRIVATE hwymp)
 target_compile_options(bench_batch PRIVATE

@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Checks that the oracle tests catch deliberately injected bugs.
 
-Each mutation changes one line of a temporary copy of float.h and rebuilds the
-oracle test against it. A mutant that survives means the tests have a blind
-spot. Windows only for now, as it links the vcpkg libraries directly.
+Each mutation changes one place in a temporary copy of the headers and rebuilds
+an oracle test against it: float_oracle_test for the arithmetic, and
+convert_oracle_test for the conversions. A mutant that survives means the tests
+have a blind spot. Windows only for now, as it links the vcpkg libraries
+directly.
 Usage: mutation_check.py <build directory> [compiler] [jobs]
 """
 
@@ -23,6 +25,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # Not listed, because no input is known to reach it: dropping the second borrow
 # in NextRootLimb's correction. That needs an estimate two or more too high with
 # a remainder of exactly zero above limb 2j. The code stays for correctness.
+# Nor the overflow check in RoundSignificand: Finish overflows correctly by
+# itself unless the exponent exceeds 32 bits, which MPFR on Windows cannot
+# parse. charconv_test's ParseSyntax covers that case.
 MUTATIONS = [
     ("ties round down", "return round_bit & (sticky | is_odd);",
      "return round_bit & sticky;"),
@@ -57,7 +62,7 @@ MUTATIONS = [
     ("subnormal boundary off by one", "if (discard >= kTotalBits) {",
      "if (discard > kTotalBits) {"),
     ("alignment drops lost words",
-     "for (int i = 0; i + 1 < words; ++i) {\n      lost |= small[static_cast<std::size_t>(i)];\n    }",
+     "for (int i = 0; i + 1 < words; ++i) {\n      lost |= lesser[static_cast<std::size_t>(i)];\n    }",
      ""),
     ("alignment drops lost bits",
      "lost |= (wide[0] << 1) << complement;",
@@ -75,8 +80,8 @@ MUTATIONS = [
      "difference.rest = sbb(0, difference.rest, borrow);",
      "borrow = 0;"),
     ("cancellation sign not flipped",
-     "small = temporary;\n        negative = !negative;",
-     "small = temporary;"),
+     "lesser = temporary;\n        negative = !negative;",
+     "lesser = temporary;"),
     ("single-bit cancellation exponent wrong",
      "      exponent -= shift;\n    }\n    return Finish(negative, exponent, difference, env);",
      "    }\n    return Finish(negative, exponent, difference, env);"),
@@ -100,7 +105,7 @@ MUTATIONS = [
      ""),
     ("row carry lost", "product[i + kLimbs] = carry;", ""),
     ("word-aligned shift drops low bits",
-     "result.rest = (small[0] << 1) << complement;",
+     "result.rest = (lesser[0] << 1) << complement;",
      "result.rest = 0;"),
     ("multiplication exponent off by one",
      "a.exponent_ + b.exponent_ + 1 - shift;",
@@ -188,11 +193,11 @@ MUTATIONS = [
      "while (false) {\n    // (s - 1)^2"),
     # Fused multiply-add.
     ("fma sticky lost in alignment",
-     "small[0] |= detail::IsZero(lost) ? 0 : 1;",
+     "lesser[0] |= detail::IsZero(lost) ? 0 : 1;",
      ""),
     ("fma far operand vanishes",
-     "small.fill(0);\n      small[0] = 1;",
-     "small.fill(0);"),
+     "lesser.fill(0);\n      lesser[0] = 1;",
+     "lesser.fill(0);"),
     ("fma sum carry drops sticky",
      "total[0] |= sticky;",
      ""),
@@ -209,7 +214,7 @@ MUTATIONS = [
      "if (detail::IsZero(total)) return Zero(env.rounding() == Rounding::kDown);",
      "if (detail::IsZero(total)) return Zero(false);"),
     ("fma compares exponents only",
-     "(big_exponent == small_exponent &&\n         detail::CompareLimbs(big, small) < 0)",
+     "(big_exponent == small_exponent &&\n         detail::CompareLimbs(big, lesser) < 0)",
      "false"),
     ("fma zero times infinity is valid",
      "if (a.is_zero() || b.is_zero()) return InvalidOperation(env);\n      if (c.is_inf()",
@@ -284,15 +289,88 @@ MUTATIONS = [
 ]
 
 
-def run_mutant(mutation, source, build_flags, compiler, work):
-    name, old, new = mutation
-    if source.count(old) != 1:
+# Mutations of the conversions, caught by convert_oracle_test: (name, header,
+# text to find, replacement).
+CONVERSION_MUTATIONS = [
+    ("rounding drops the next limb", "float.h",
+     "value.rest = limbs[count - kLimbs - 1];", "value.rest = 0;"),
+    ("rounding ignores lower limbs", "float.h",
+     "sticky = sticky || limbs[i] != 0;", "(void)limbs[i];"),
+    ("rounding ignores sticky", "float.h",
+     "if (sticky) value.rest |= 1;", ""),
+    ("signaling NaN converts silently", "float.h",
+     "if (x.is_signaling()) env.raise(kFlagInvalid);\n      // Both",
+     "// Both"),
+    ("converted NaN not quieted", "float.h",
+     "SetQuietBit(limbs);\n      return FromParts(negative, kExpNaN, limbs);",
+     "return FromParts(negative, kExpNaN, limbs);"),
+    ("negative integers lose their sign", "float.h",
+     "if (negative) magnitude = limb_t{0} - magnitude;", ""),
+    ("most negative integer out of range", "float.h",
+     "static_cast<limb_t>((Limits::max)()) + (negative ? 1 : 0);",
+     "static_cast<limb_t>((Limits::max)());"),
+    ("convertToInteger raises inexact", "float.h",
+     "if (exact) env.raise(local.flags & kFlagInexact);",
+     "env.raise(local.flags & kFlagInexact);"),
+    ("negative to unsigned allowed", "float.h",
+     "if ((negative && !Limits::is_signed) || magnitude > limit) {",
+     "if (magnitude > limit) {"),
+    ("integer of NaN raises nothing", "float.h",
+     "if (is_nan()) {\n      env.raise(kFlagInvalid);\n      return 0;",
+     "if (is_nan()) {\n      return 0;"),
+    ("fast parse rounds its upper bound down", "charconv.h",
+     "const T high = mul(d_high, p_high, up);",
+     "const T high = mul(d_high, p_high, down);"),
+    ("fast parse always inexact", "charconv.h",
+     "if (!EqualsDecimal(result, digits, t)) env.raise(kFlagInexact);",
+     "env.raise(kFlagInexact);"),
+    ("fast parse tiny without underflow", "charconv.h",
+     "env.raise(kFlagInexact | kFlagUnderflow);",
+     "env.raise(kFlagInexact);"),
+    ("fast parse misses overflow", "charconv.h",
+     "if (magnitude > Unbounded(F::MaxFinite())) {",
+     "if (magnitude > Unbounded(F::MaxFinite()) && false) {"),
+    ("trailing fraction zeros not counted", "charconv.h",
+     "--end[1];\n    ++result.exponent;", "--end[1];"),
+    ("eight digits misread", "charconv.h",
+     "chars = chars * 10 + (chars >> 8);", "chars = chars * 10 + (chars >> 16);"),
+    ("full chunk not flushed", "charconv.h",
+     "// A full chunk takes no more digits.\n        if (chunk_digits == 19) {",
+     "if (false) {"),
+    ("parsed exponent sign lost", "charconv.h",
+     "if (exponent_negative) exponent = -exponent;", ""),
+    ("exact output ties round up", "charconv.h",
+     "round_bit = half >= 0;", "round_bit = half > 0;"),
+    ("scaled exactness off by one", "charconv.h",
+     "if (t < 0) return e - t >= 0;", "if (t < 0) return e - t > 0;"),
+    ("fast shortest ignores the closer lower end", "charconv.h",
+     "const bool lower_closer = power_of_two && x.raw_exponent() > F::kEmin;",
+     "const bool lower_closer = false;"),
+    ("fast shortest ties round up", "charconv.h",
+     "order = (floor_prefix.back() - '0') % 2 == 0 ? -1 : 1;", "order = 1;"),
+    ("hexadecimal rounding parity", "charconv.h",
+     ": fraction.bit(0);", ": !fraction.bit(0);"),
+    ("Karatsuba forgets the low product", "bigint.h",
+     "SubFrom(middle.data(), middle.size(), r, 2 * low);", ""),
+    ("powers of five lose a factor", "bigint.h",
+     "for (std::uint64_t i = 0; i < exponent % 27; ++i) factor *= 5;",
+     "for (std::uint64_t i = 1; i < exponent % 27; ++i) factor *= 5;"),
+]
+
+HEADERS = ["float.h", "limb_ops.h", "bigint.h", "charconv.h"]
+
+
+def run_mutant(mutation, sources, build_flags, compiler, work):
+    name, header, old, new = mutation
+    if sources[header].count(old) != 1:
         return name, "BAD PATTERN"
     directory = work / str(abs(hash(name)))
     (directory / "hwymp").mkdir(parents=True)
-    (directory / "hwymp" / "float.h").write_text(source.replace(old, new),
-                                                 encoding="utf8")
-    shutil.copy(ROOT / "include" / "hwymp" / "limb_ops.h", directory / "hwymp")
+    for file in HEADERS:
+        text = sources[file]
+        if file == header:
+            text = text.replace(old, new)
+        (directory / "hwymp" / file).write_text(text, encoding="utf8")
     executable = directory / "mutant.exe"
     command = [compiler, "-std=c++20", "-O1", f"-I{directory}", *build_flags,
                "-o", str(executable)]
@@ -300,8 +378,10 @@ def run_mutant(mutation, source, build_flags, compiler, work):
     if compiled.returncode != 0:
         return name, "COMPILE ERROR\n" + compiled.stderr[-600:]
     try:
+        # Generous, since a mutant that only slows down must not count as
+        # caught.
         result = subprocess.run([str(executable)], capture_output=True,
-                                text=True, timeout=120)
+                                text=True, timeout=900)
     except subprocess.TimeoutExpired:
         return name, "caught (timeout)"
     return name, "caught" if result.returncode != 0 else "SURVIVED"
@@ -316,28 +396,35 @@ def main():
     if not deps.exists():
         deps = ROOT.parent / "does-not-exist"
     libraries = build / "lib"
-    flags = [
-        str(ROOT / "tests" / "float_oracle_test.cpp"),
+    common = [
         f"-I{deps / 'include'}", f"-I{installed / 'include'}",
         "-D_CRT_SECURE_NO_WARNINGS", "-D_DLL", "-Xlinker", "/ignore:4099",
         str(libraries / "gtest_main.lib"), str(libraries / "gtest.lib"),
         str(installed / "lib" / "mpfr.lib"), str(installed / "lib" / "gmp.lib"),
         "-lmsvcrt", "-lucrt", "-lvcruntime", "-fuse-ld=lld",
     ]
-    source = (ROOT / "include" / "hwymp" / "float.h").read_text(encoding="utf8")
+    arithmetic = [str(ROOT / "tests" / "float_oracle_test.cpp"), *common]
+    conversions = [str(ROOT / "tests" / "convert_oracle_test.cpp"), *common]
+    sources = {file: (ROOT / "include" / "hwymp" / file).read_text(
+        encoding="utf8") for file in HEADERS}
+    runs = [((name, "float.h", old, new), arithmetic)
+            for name, old, new in MUTATIONS]
+    runs += [(mutation, conversions) for mutation in CONVERSION_MUTATIONS]
     with tempfile.TemporaryDirectory() as temporary:
         work = pathlib.Path(temporary)
-        # An unchanged build must pass, or "caught" would mean nothing.
+        # Unchanged builds must pass, or "caught" would mean nothing.
         anchor = MUTATIONS[0][1]
-        control = run_mutant(("control", anchor, anchor), source, flags,
-                             compiler, work)
-        if control[1] != "SURVIVED":
-            print(f"Control build did not pass: {control[1]}")
-            return 1
+        for index, flags in enumerate((arithmetic, conversions)):
+            control = run_mutant(("control", "float.h", anchor, anchor),
+                                 sources, flags, compiler,
+                                 work / f"control{index}")
+            if control[1] != "SURVIVED":
+                print(f"Control build did not pass: {control[1]}")
+                return 1
         with ThreadPoolExecutor(jobs) as pool:
             results = list(pool.map(
-                lambda m: run_mutant(m, source, flags, compiler, work),
-                MUTATIONS))
+                lambda run: run_mutant(run[0], sources, run[1], compiler, work),
+                runs))
     failures = 0
     for name, outcome in results:
         print(f"{outcome:20} {name}")
