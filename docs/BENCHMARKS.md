@@ -119,6 +119,34 @@ milliseconds, and so does output with more than about 780 significant digits.
 Fixed notation of such values has up to 1.3 million digits and is slow in
 proportion.
 
+## Exponentials and logarithms
+
+`bench/bench_math.cpp`, same machine and libraries, not pinned. Best of 9 runs
+over 256 arguments: exponentials in (-20, 20), logarithms of positive values
+with binary exponents in [-20, 20), expm1 and log1p below 1/4 in magnitude.
+Nanoseconds per call, all rounding to nearest. Both libraries round correctly.
+Boost's `cpp_bin_float` is shown for exp and log only.
+
+| Format | Library | exp | exp2 | expm1 | log | log2 | log10 | log1p |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| binary128 | mpfix | 642 | 594 | 496 | 465 | 486 | 476 | 349 |
+| | MPFR | 1056 | 1300 | 1017 | 1728 | 1929 | 3350 | 1860 |
+| | Boost | 5048 | | | 6583 | | | |
+| binary256 | mpfix | 1108 | 1071 | 934 | 839 | 875 | 879 | 692 |
+| | MPFR | 1628 | 1888 | 1556 | 2751 | 3244 | 5828 | 4780 |
+| | Boost | 17184 | | | 17995 | | | |
+| binary512 | mpfix | 2673 | 2571 | 2218 | 2443 | 2387 | 2402 | 1959 |
+| | MPFR | 2959 | 3284 | 2879 | 4635 | 4907 | 9016 | 7344 |
+| | Boost | 76291 | | | 62141 | | | |
+
+mpfix is 1.1 to 2.2 times faster than MPFR for the exponentials and 1.9 to 7
+times faster for the logarithms. The margin for exp narrows with size: at
+binary512 its series still costs about 20 full multiplications and as many
+additions, where MPFR works on fixed-point limbs.
+
+The first call in each format builds constants and reduction tables, once:
+0.4 ms for exp and 0.5 ms for log at binary128, 2.2 ms and 3.7 ms at binary512.
+
 ## Batch prototype
 
 `bench/bench_batch.cpp` runs binary256 on Highway's AVX2 target with 4 lanes, in

@@ -23,6 +23,18 @@ binary256 y = mpfix::from_string<binary256>("0.1");
 std::cout << std::setprecision(40) << y << '\n';
 ```
 
+`mpfix/math.h` adds `exp`, `exp2`, `expm1`, `log`, `log2`, `log10` and
+`log1p`, correctly rounded in every mode, with an optional `Context` for the
+mode and flags:
+
+```cpp
+#include "mpfix/math.h"
+
+binary256 e = mpfix::exp(binary256(1));
+mpfix::Context down{mpfix::Rounding::kDown};
+binary256 lower = mpfix::log(binary256(10), down);  // Rounded down.
+```
+
 `to_chars` and `from_chars` follow `<charconv>`, with an optional `Context`.
 The formats are `binary128`, `binary256` and `binary512`, or any
 `mpfix::Float<P, E>`. `std::numeric_limits` is specialized for all of them.
@@ -42,8 +54,8 @@ std::cout << x.format(Eigen::IOFormat(Eigen::FullPrecision)) << '\n';
 
 Tested with Eigen 5.0.1: the LU, QR, Cholesky, SVD and self-adjoint
 eigenvalue decompositions, the real Schur form, inverses and determinants.
-Modules that need elementary functions such as `exp` and `log` do not work
-yet, since mpfix does not provide them.
+`mpfix/eigen.h` includes `mpfix/math.h`, so Eigen finds `exp` and `log`.
+Modules that need the trigonometric functions do not work yet.
 
 ## Building
 

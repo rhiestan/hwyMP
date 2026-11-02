@@ -1,0 +1,895 @@
+// Copyright 2026 The mpfix Authors
+// SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
+
+// Exponentials and logarithms: exp, exp2, expm1, log, log2, log10 and log1p,
+// correctly rounded in all five modes, with the IEEE 754 flags when a Context
+// is given.
+//
+// Each function evaluates in a wider working format with a proven bound on
+// its error, then rounds both ends of the interval that bound gives. If they
+// round alike, that is the correctly rounded result; if not, the true value
+// lies very close to a rounding boundary, and the evaluation is repeated with
+// about twice and then four times the precision (Ziv's strategy). Results that
+// are exact, such as log2 of a power of two, are detected separately, since
+// no interval can decide them. Correct rounding at the last step would only
+// fail for an input whose result lies within about 2^-(4P) of a rounding
+// boundary, relative to its size; no such input is known, and for random
+// inputs the first step almost always decides.
+//
+// The first working format reduces arguments with tables of about 100
+// entries, built on the first call in each format along with the constants:
+// about 0.5 ms for binary128 and 4 ms for binary512. Formats with more than 26
+// exponent bits are not supported.
+
+#ifndef MPFIX_MATH_H_
+#define MPFIX_MATH_H_
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+
+#include "mpfix/bigint.h"
+#include "mpfix/charconv.h"
+#include "mpfix/float.h"
+
+namespace mpfix {
+namespace detail {
+
+// The working formats, with `scale` times one limb more than F.
+template <class F, int scale>
+using MathWorking =
+    Float<static_cast<int>(kLimbBits * scale * (F::kLimbs + 1)), 29>;
+
+constexpr int IntegerSqrt(int n) {
+  int root = 0;
+  while ((root + 1) * (root + 1) <= n) ++root;
+  return root;
+}
+
+// 2 atanh(1 / q) * 2^bits, rounded down, with an error below 2^-bits times
+// the number of terms.
+inline BigUint TwiceAtanhOfInverse(limb_t q, std::size_t bits) {
+  BigUint power(1);
+  power.ShiftLeft(bits + 1);
+  power.DivSmall(q);  // 2 / q^(2k + 1), scaled.
+  const limb_t q2 = q * q;
+  BigUint sum;
+  for (limb_t k = 1; !power.is_zero(); k += 2) {
+    BigUint term = power;
+    term.DivSmall(k);
+    sum.Add(term);
+    power.DivSmall(q2);
+  }
+  return sum;
+}
+
+template <class W>
+W FromFixedPoint(const BigUint& value, std::size_t bits) {
+  if (value.is_zero()) return W::Zero();
+  return RoundInteger<W>(false, value, -static_cast<std::int64_t>(bits), false,
+                         SilentEnv{Rounding::kNearestEven});
+}
+
+// The constants and series coefficients for a working format W. Every value
+// is within one rounding, 2^-W::kPrecision relative, of the exact one, except
+// as noted.
+template <class W>
+struct MathConstants {
+  static constexpr int kPrecision = W::kPrecision;
+  // The exponential series runs on arguments below 2^-kExpScale, reached by
+  // halving; each halving costs one squaring afterwards. The series costs
+  // about 2 sqrt(n) multiplications for n terms, so few halvings pay.
+  static constexpr int kExpScale = (std::max)(2, IntegerSqrt(kPrecision / 8));
+  // The logarithm series runs on arguments below 2^-kLogScale, reached by
+  // square roots, which cost more than series terms.
+  static constexpr int kLogScale = (std::max)(2, IntegerSqrt(kPrecision / 7));
+  static constexpr int kLogTerms =
+      (kPrecision + 2 + 2 * kLogScale - 1) / (2 * kLogScale);
+
+  W ln2;
+  // ln2_hi has kPrecision - 32 bits, so k * ln2_hi is exact for |k| < 2^32,
+  // and ln2_hi + ln2_lo approximates ln 2 to about 2^-(2 kPrecision - 32).
+  W ln2_hi;
+  W ln2_lo;
+  W inv_ln2;   // Within two roundings.
+  W ln10;
+  W inv_ln10;  // Within two roundings.
+  std::array<W, kLogTerms> inv_odd;  // 1 / (2i + 1).
+
+  MathConstants() {
+    // ln 2 = 2 atanh(1/3), to twice the precision for the split.
+    const std::size_t bits = 2 * static_cast<std::size_t>(kPrecision) + 64;
+    const BigUint ln2_fixed = TwiceAtanhOfInverse(3, bits);
+    ln2 = FromFixedPoint<W>(ln2_fixed, bits);
+    BigUint hi = ln2_fixed;
+    const std::size_t drop = ln2_fixed.bit_length() - (kPrecision - 32);
+    hi.ShiftRight(drop);
+    hi.ShiftLeft(drop);
+    BigUint lo = ln2_fixed;
+    lo.Sub(hi);
+    ln2_hi = FromFixedPoint<W>(hi, bits);
+    ln2_lo = FromFixedPoint<W>(lo, bits);
+    const W one(1);
+    inv_ln2 = one / ln2;
+
+    // ln 10 = 3 ln 2 + ln(5/4), and ln(5/4) = 2 atanh(1/9).
+    BigUint ln10_fixed = ln2_fixed;
+    ln10_fixed.MulAdd(3, 0);
+    ln10_fixed.Add(TwiceAtanhOfInverse(9, bits));
+    ln10 = FromFixedPoint<W>(ln10_fixed, bits);
+    inv_ln10 = one / ln10;
+
+    for (int i = 0; i < kLogTerms; ++i) {
+      inv_odd[static_cast<std::size_t>(i)] = one / W(2 * i + 1);
+    }
+  }
+};
+
+template <class W>
+const MathConstants<W>& GetMathConstants() {
+  static const MathConstants<W> constants;
+  return constants;
+}
+
+// --- Kernels, in a working format W with unit roundoff u = 2^-kPrecision ---
+
+// x * m, rounded to nearest, for 0 < m < 2^63. Takes linear time.
+template <class W>
+W MulSmall(const W& x, limb_t m) {
+  if (x.is_zero() || m == 1) return x;
+  constexpr std::size_t kCount = W::kLimbs + 1;
+  std::array<limb_t, kCount> limbs;
+  limb_t carry = 0;
+  for (std::size_t i = 0; i < W::kLimbs; ++i) {
+    limb_t high;
+    limb_t low = mul_wide(x.raw_limbs()[i], m, high);
+    carry_t c = 0;
+    limbs[i] = adc(low, carry, c);
+    carry = high + c;
+  }
+  limbs[kCount - 1] = carry;
+  // x * m < 2^(64 kCount), and its top limb is nonzero for m > 1.
+  const int shift = countl_zero(carry);
+  if (shift != 0) {
+    for (std::size_t i = kCount; i-- > 1;) {
+      limbs[i] = (limbs[i] << shift) | (limbs[i - 1] >> (kLimbBits - shift));
+    }
+    limbs[0] <<= shift;
+  }
+  return FloatAccess::Round<W>(x.signbit(),
+                               std::int64_t{x.raw_exponent()} + kLimbBits - shift,
+                               limbs.data(), kCount, false, NearestEnv{});
+}
+
+// x / m, rounded to nearest, for 0 < m < 2^63. Takes linear time.
+template <class W>
+W DivSmall(const W& x, limb_t m) {
+  if (x.is_zero() || m == 1) return x;
+  constexpr std::size_t kCount = W::kLimbs + 1;
+  std::array<limb_t, kCount> limbs;
+  limbs[0] = 0;
+  for (std::size_t i = 0; i < W::kLimbs; ++i) limbs[i + 1] = x.raw_limbs()[i];
+  const bool sticky = DivideLimbs(limbs.data(), kCount, m) != 0;
+  // The quotient is at least 2^(64 kCount - 1) / m >= 2^(64 kCount - 64).
+  const int shift = countl_zero(limbs[kCount - 1]);
+  if (shift != 0) {
+    for (std::size_t i = kCount; i-- > 1;) {
+      limbs[i] = (limbs[i] << shift) | (limbs[i - 1] >> (kLimbBits - shift));
+    }
+    limbs[0] <<= shift;
+  }
+  return FloatAccess::Round<W>(x.signbit(),
+                               std::int64_t{x.raw_exponent()} - shift,
+                               limbs.data(), kCount, sticky, NearestEnv{});
+}
+
+// e^r - 1 for |r| < 1/2, with a relative error below `units` * u. The error
+// of r itself is not included.
+template <class W>
+W ExpM1Kernel(const W& r, int& units) {
+  using Constants = MathConstants<W>;
+  if (r.is_zero()) {
+    units = 0;
+    return r;
+  }
+  // Halve r below 2^-kExpScale; each halving is undone by one squaring.
+  const int halvings =
+      (std::max)(0, r.raw_exponent() + 1 + Constants::kExpScale);
+  const W x = scalbn(r, -halvings);
+  // The first omitted term, relative to x, is below |x|^n / (n + 1)!.
+  const int scale = -(x.raw_exponent() + 1);
+  int n = 1;
+  int log2_factorial = 1;  // A lower bound on log2((n + 1)!).
+  while (n * scale + log2_factorial < Constants::kPrecision + 3) {
+    ++n;
+    log2_factorial += std::bit_width(static_cast<unsigned>(n + 1)) - 1;
+  }
+
+  // The sum of x^j / j! for j = 1..n, by Paterson and Stockmeyer: in blocks
+  // of k terms, whose coefficients are small integers over one common
+  // denominator, so that only the powers of x and one product per block are
+  // full multiplications. With acc_b = sum over j > bk of x^(j - bk) (bk)!/j!,
+  // acc_b * D = sum_{i<k} x^i M_i + x^k (1 + acc_(b+1)), where
+  // D = (bk + 1)...(bk + k) and M_i = (bk + i + 1)...(bk + k).
+  const int n_bits = std::bit_width(static_cast<unsigned>(n));
+  const int k = (std::max)(1, (std::min)(IntegerSqrt(n), 62 / n_bits));
+  constexpr int kMaxBlock = 16;
+  std::array<W, kMaxBlock + 1> powers;
+  powers[1] = x;
+  for (int i = 2; i <= k; ++i) {
+    powers[static_cast<std::size_t>(i)] =
+        powers[static_cast<std::size_t>(i - 1)] * x;
+  }
+  const int blocks = (n + k - 1) / k;
+  const W one(1);
+  W acc = W::Zero();
+  for (int b = blocks - 1; b >= 0; --b) {
+    const int size = (std::min)(k, n - b * k);
+    const auto base = static_cast<limb_t>(b * k);
+    W sum = b == blocks - 1 ? powers[static_cast<std::size_t>(size)]
+                            : powers[static_cast<std::size_t>(size)] *
+                                  (one + acc);
+    limb_t multiplier = 1;
+    for (int i = size - 1; i >= 1; --i) {
+      multiplier *= base + static_cast<limb_t>(i) + 1;
+      sum = sum + MulSmall(powers[static_cast<std::size_t>(i)], multiplier);
+    }
+    acc = DivSmall(sum, multiplier * (base + 1));
+  }
+  W q = acc;
+  // e^(2a) - 1 = q (q + 2) for q = e^a - 1, which keeps the relative error
+  // of a small result.
+  const W two(2);
+  for (int i = 0; i < halvings; ++i) q = q * (q + two);
+  // The series and its truncation stay within 2 u per term, and each
+  // squaring adds 2 u; for |r| <= 1/2 the squarings at most double the
+  // earlier error.
+  units = 2 * (10 + 2 * n + 2 * halvings);
+  return q;
+}
+
+// log(1 + d) for -0.3 < d < 0.42, with a relative error below `units` * u.
+// d is exact.
+template <class W>
+W Log1pKernel(W d, int& units) {
+  using Constants = MathConstants<W>;
+  if (d.is_zero()) {
+    units = 0;
+    return d;
+  }
+  const Constants& c = GetMathConstants<W>();
+  const W one(1);
+  // log(1 + d) = 2 log(1 + d') with d' = d / (1 + sqrt(1 + d)), which keeps
+  // the relative error of d' within 3 u more than that of d.
+  int roots = 0;
+  while (d.raw_exponent() >= -Constants::kLogScale) {
+    d = d / (one + sqrt(one + d));
+    ++roots;
+  }
+  // log(1 + d) = 2 atanh(t) for t = d / (2 + d).
+  const W t = d / (W(2) + d);
+  const W t2 = t * t;
+  const int scale = -(t.raw_exponent() + 1);
+  const int n = (Constants::kPrecision + 2 + 2 * scale - 1) / (2 * scale);
+  W p = c.inv_odd[static_cast<std::size_t>(n - 1)];
+  for (int i = n - 2; i >= 0; --i) {
+    p = p * t2 + c.inv_odd[static_cast<std::size_t>(i)];
+  }
+  units = 4 * roots + 2 * n + 16;
+  return scalbn(t * p, roots + 1);
+}
+
+// Tables for reducing r in [-0.36, 0.36] to below 2^-15 in two steps, as
+// r = i/2^7 + j/2^14 + r2. They hold e^(i/2^7) - 1 and e^(j/2^14) - 1, which
+// keeps the relative error of small results, computed in twice the precision
+// and rounded once.
+template <class W>
+struct ExpTables {
+  static constexpr int kOffset1 = 47;  // i in [-46, 46].
+  static constexpr int kOffset2 = 65;  // j in [-64, 64].
+  std::array<W, 2 * kOffset1 + 1> expm1_1;
+  std::array<W, 2 * kOffset2 + 1> expm1_2;
+
+  ExpTables() {
+    using Wide = Float<2 * W::kPrecision, 29>;
+    for (int i = -kOffset1; i <= kOffset1; ++i) {
+      int units;
+      expm1_1[static_cast<std::size_t>(i + kOffset1)] =
+          FloatAccess::Convert<W>(ExpM1Kernel(scalbn(Wide(i), -7), units),
+                                  NearestEnv{});
+    }
+    for (int j = -kOffset2; j <= kOffset2; ++j) {
+      int units;
+      expm1_2[static_cast<std::size_t>(j + kOffset2)] =
+          FloatAccess::Convert<W>(ExpM1Kernel(scalbn(Wide(j), -14), units),
+                                  NearestEnv{});
+    }
+  }
+};
+
+template <class W>
+const ExpTables<W>& GetExpTables() {
+  static const ExpTables<W> tables;
+  return tables;
+}
+
+// e^r - 1 for |r| <= 0.36, with a relative error below `units` * u. The
+// error of r itself is not included.
+template <class W, bool kUseTables>
+W ExpM1Reduced(const W& r, int& units) {
+  if constexpr (kUseTables) {
+    const ExpTables<W>& t = GetExpTables<W>();
+    // Both subtractions are exact.
+    const int i = to_integer<int>(scalbn(r, 7), Rounding::kNearestEven);
+    const W r1 = i != 0 ? r - scalbn(W(i), -7) : r;
+    const int j = to_integer<int>(scalbn(r1, 14), Rounding::kNearestEven);
+    const W r2 = j != 0 ? r1 - scalbn(W(j), -14) : r1;
+    W q = ExpM1Kernel(r2, units);
+    // e^(a + b) - 1 = A + B + A B for A = e^a - 1 and B = e^b - 1. Each
+    // step cancels at most half of its larger term, since the reduced
+    // arguments are each at most half the size of the table step.
+    const auto combine = [&q](const W& a) { q = (a + q) + a * q; };
+    if (j != 0) combine(t.expm1_2[static_cast<std::size_t>(j + t.kOffset2)]);
+    if (i != 0) combine(t.expm1_1[static_cast<std::size_t>(i + t.kOffset1)]);
+    if (i != 0 || j != 0) units = 3 * units + 16;
+    return q;
+  } else {
+    return ExpM1Kernel(r, units);
+  }
+}
+
+// Tables for reducing m in [0.705, 1.41) to near 1 in two steps, as
+// m c1 c2 = 1 + d2 with |d2| < 2^-13.9: c1 = 1 / (1 + i/2^7) to 12 bits and
+// c2 = 1 / (1 + j/2^13) to 20 bits, so that for an m of at most
+// W::kPrecision - 34 bits both products are exact. The logarithms are
+// computed in twice the precision and rounded once.
+template <class W>
+struct LogTables {
+  static constexpr int kOffset1 = 53;  // i in [-38, 52].
+  static constexpr int kOffset2 = 64;  // j in [-47, 47].
+  std::array<W, 2 * kOffset1 + 1> c1;
+  std::array<W, 2 * kOffset1 + 1> minus_log_c1;
+  std::array<W, 2 * kOffset2 + 1> c2;
+  std::array<W, 2 * kOffset2 + 1> minus_log_c2;
+
+  LogTables();
+};
+
+template <class W, bool kUseTables>
+W LogOfReduced(const W& m, int& units);
+
+template <class W>
+LogTables<W>::LogTables() {
+  using Wide = Float<2 * W::kPrecision, 29>;
+  const auto fill = [](int offset, int index_bits, int value_bits, W* c,
+                       W* minus_log_c) {
+    for (int i = -offset; i <= offset; ++i) {
+      const double scale = std::ldexp(1.0, value_bits);
+      const double value =
+          std::ldexp(std::nearbyint(scale / (1.0 + std::ldexp(i, -index_bits))),
+                     -value_bits);
+      c[i + offset] = W(value);
+      int units;
+      minus_log_c[i + offset] = FloatAccess::Convert<W>(
+          -LogOfReduced<Wide, false>(Wide(value), units), NearestEnv{});
+    }
+  };
+  fill(kOffset1, 7, 12, c1.data(), minus_log_c1.data());
+  fill(kOffset2, 13, 20, c2.data(), minus_log_c2.data());
+}
+
+template <class W>
+const LogTables<W>& GetLogTables() {
+  static const LogTables<W> tables;
+  return tables;
+}
+
+// log(m) for m in [0.705, 1.41), with a relative error below `units` * u.
+// With tables, m must have at most W::kPrecision - 34 bits.
+template <class W, bool kUseTables>
+W LogOfReduced(const W& m, int& units) {
+  const W one(1);
+  W d = m - one;  // Exact.
+  if constexpr (kUseTables) {
+    const LogTables<W>& t = GetLogTables<W>();
+    W product = m;
+    W tail = W::Zero();
+    const int i = to_integer<int>(scalbn(d, 7), Rounding::kNearestEven);
+    if (i != 0) {
+      const auto index = static_cast<std::size_t>(i + t.kOffset1);
+      product = product * t.c1[index];
+      tail = t.minus_log_c1[index];
+      d = product - one;
+    }
+    const int j = to_integer<int>(scalbn(d, 13), Rounding::kNearestEven);
+    if (j != 0) {
+      const auto index = static_cast<std::size_t>(j + t.kOffset2);
+      product = product * t.c2[index];
+      tail = tail + t.minus_log_c2[index];
+      d = product - one;
+    }
+    W result = Log1pKernel(d, units);
+    if (i != 0 || j != 0) {
+      // Each table entry is at most 2.4 times |log m|, and log(1 + d) at
+      // most 1.3 times.
+      result = result + tail;
+      units = 2 * units + 12;
+    }
+    return result;
+  } else {
+    return Log1pKernel(d, units);
+  }
+}
+
+// log(z) for a finite positive z, with a relative error below `units` * u
+// plus that of z. Sets `binary_exponent` and `log_m` to e and log(m) with
+// z = 2^e m, m in [0.705, 1.41). With tables, z must have at most
+// W::kPrecision - 34 bits.
+template <class W, bool kUseTables = false>
+W LogKernel(const W& z, int& units, std::int64_t& binary_exponent, W& log_m) {
+  const MathConstants<W>& c = GetMathConstants<W>();
+  std::int32_t e = z.raw_exponent();
+  W m = scalbn(z, -e);
+  if (m >= W(1.41)) {
+    m = scalbn(m, -1);
+    ++e;
+  }
+  log_m = LogOfReduced<W, kUseTables>(m, units);
+  binary_exponent = e;
+  if (e == 0) return log_m;
+  // |e ln 2 + log(m)| >= |e ln 2| / 2, so the sum adds at most 6 u.
+  units += 6;
+  return W(e) * c.ln2 + log_m;
+}
+
+// x = k ln 2 + r with |r| < 0.35; the error of r is below 0.36 u absolute.
+template <class W, class F>
+W ReduceByLn2(const F& x, std::int64_t& k) {
+  const MathConstants<W>& c = GetMathConstants<W>();
+  const W wide = FloatAccess::Convert<W>(x, NearestEnv{});
+  const W multiple = round(wide * c.inv_ln2);
+  k = to_integer<std::int64_t>(multiple, Rounding::kNearestEven);
+  // x - k ln2_hi is exact: both are multiples of 2^(32 - kPrecision) and
+  // their difference is below 1.
+  return (wide - multiple * c.ln2_hi) - multiple * c.ln2_lo;
+}
+
+// --- Rounding ---
+
+// Rounds a value known to lie within 2^-bits relative of y, and known to be
+// inexact. Returns false if the interval does not decide the result, unless
+// `last` is set, in which case y is rounded.
+template <class F, class W, class Env>
+bool RoundTranscendental(const W& y, int bits, bool last, const Env& env,
+                         F& result) {
+  Context down{Rounding::kDown, 0};
+  Context up{Rounding::kUp, 0};
+  const W delta = scalbn(abs(y), -bits);
+  const W low = last ? y : sub(y, delta, down);
+  const W high = last ? y : add(y, delta, up);
+  const SilentEnv rounding{env.rounding()};
+
+  // Rounded to P bits with a wider exponent range, which decides overflow
+  // and tininess after rounding, as IEEE 754 defines them.
+  using Unbounded = Float<F::kPrecision, F::kExponentBits + 1>;
+  const Unbounded wide = FloatAccess::Convert<Unbounded>(low, rounding);
+  if (wide.to_bits() !=
+      FloatAccess::Convert<Unbounded>(high, rounding).to_bits()) {
+    return false;
+  }
+  const Unbounded magnitude = abs(wide);
+  if (magnitude > Unbounded(F::MaxFinite())) {
+    result = FloatAccess::Convert<F>(wide, env);  // Overflow and inexact.
+    return true;
+  }
+  if (magnitude >= Unbounded(F::MinNormal())) {
+    result = FloatAccess::Convert<F>(wide, rounding);
+    env.raise(kFlagInexact);
+    return true;
+  }
+  // Tiny: rounding to the subnormal grid must be decided on its own.
+  const F a = FloatAccess::Convert<F>(low, rounding);
+  if (a.to_bits() != FloatAccess::Convert<F>(high, rounding).to_bits()) {
+    return false;
+  }
+  env.raise(kFlagInexact | kFlagUnderflow);
+  result = a;
+  return true;
+}
+
+// Evaluates in up to three working formats. `level(tag, last, result)` works
+// in the format of the std::type_identity tag.
+// Tests set kFirstLevel to start at the second or third format.
+template <class F, int kFirstLevel, class Level>
+F ZivEvaluate(const Level& level) {
+  F result;
+  if constexpr (kFirstLevel <= 1) {
+    if (level(std::type_identity<MathWorking<F, 1>>{}, false, result)) {
+      return result;
+    }
+  }
+  if constexpr (kFirstLevel <= 2) {
+    if (level(std::type_identity<MathWorking<F, 2>>{}, false, result)) {
+      return result;
+    }
+  }
+  level(std::type_identity<MathWorking<F, 4>>{}, true, result);
+  return result;
+}
+
+// The lost bits for an error of `units` u, with a margin.
+inline int LostBits(int units) {
+  return std::bit_width(static_cast<unsigned>(units)) + 2;
+}
+
+// Rounds v + t for a nonzero finite v and a t with sign `t_positive` and
+// |t| < |v| 2^-(P + 2): t only matters in directed modes, but it always makes
+// the result inexact.
+template <class F, class Env>
+F RoundBeside(const F& v, bool t_positive, const Env& env) {
+  using W = MathWorking<F, 1>;
+  const W wide = abs(FloatAccess::Convert<W>(v, NearestEnv{}));
+  const bool negative = v.signbit();
+  // Rounding with a sticky bit adds an infinitesimal to the magnitude.
+  W magnitude = wide;
+  if (t_positive == negative) {
+    // The magnitude shrinks: start below it instead. This is exact.
+    magnitude = wide - scalbn(wide, -(F::kPrecision + 2));
+  }
+  return FloatAccess::Round<F>(negative, magnitude.raw_exponent(),
+                               magnitude.raw_limbs().data(), W::kLimbs, true,
+                               env);
+}
+
+// A positive value far below the smallest subnormal.
+template <class F, class Env>
+F RoundTinyPositive(const Env& env) {
+  const limb_t top_bit = limb_t{1} << (kLimbBits - 1);
+  return FloatAccess::Round<F>(false, std::int64_t{F::kEmin} - F::kPrecision - 4,
+                               &top_bit, 1, true, env);
+}
+
+template <class F, class Env>
+F RoundOverflow(bool negative, const Env& env) {
+  const limb_t top_bit = limb_t{1} << (kLimbBits - 1);
+  return FloatAccess::Round<F>(negative, std::int64_t{F::kEmax} + 1, &top_bit, 1,
+                               false, env);
+}
+
+template <class F, class Env>
+F InvalidResult(const Env& env) {
+  env.raise(kFlagInvalid);
+  return F::QuietNaN();
+}
+
+template <class F>
+using Wide1 = MathWorking<F, 1>;
+
+// --- The functions ---
+
+template <class F, class Env, int kFirstLevel = 1>
+F ExpImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F::Zero() : x;
+  if (x.is_zero()) return F(1);
+  if (x.raw_exponent() <= -(F::kPrecision + 4)) {
+    return RoundBeside(F(1), !x.signbit(), env);
+  }
+  const Wide1<F> wide = FloatAccess::Convert<Wide1<F>>(x, NearestEnv{});
+  // e^(kEmax + 2) overflows, and e^-(kEmax + P + 4) is below a quarter of the
+  // smallest subnormal.
+  if (wide >= Wide1<F>(F::kEmax + 2)) return RoundOverflow<F>(false, env);
+  if (wide <= Wide1<F>(-(F::kEmax + F::kPrecision + 4))) {
+    return RoundTinyPositive<F>(env);
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    std::int64_t k;
+    const W r = ReduceByLn2<W>(x, k);
+    int units;
+    const W q =
+        ExpM1Reduced<W, std::is_same_v<W, MathWorking<F, 1>>>(r, units);
+    const W y = scalbn(q + W(1), static_cast<int>(k));
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 4), last,
+                               env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Exp2Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F::Zero() : x;
+  if (x.raw_exponent() <= -(F::kPrecision + 4) && !x.is_zero()) {
+    return RoundBeside(F(1), !x.signbit(), env);
+  }
+  const Wide1<F> wide = FloatAccess::Convert<Wide1<F>>(x, NearestEnv{});
+  if (wide >= Wide1<F>(F::kEmax + 1)) return RoundOverflow<F>(false, env);
+  // Below 2^(kEmin - P - 1), a quarter of the smallest subnormal.
+  if (wide < Wide1<F>(F::kEmin - F::kPrecision - 1)) {
+    return RoundTinyPositive<F>(env);
+  }
+  if (trunc(x) == x) {
+    // Exact, or a subnormal that rounds away.
+    const limb_t top_bit = limb_t{1} << (kLimbBits - 1);
+    return FloatAccess::Round<F>(
+        false, to_integer<std::int64_t>(x, Rounding::kTowardZero), &top_bit, 1,
+        false, env);
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    const MathConstants<W>& c = GetMathConstants<W>();
+    const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
+    const W nearest = round(wx);
+    const std::int64_t k =
+        to_integer<std::int64_t>(nearest, Rounding::kNearestEven);
+    const W r = (wx - nearest) * c.ln2;  // Exact difference, |r| <= 0.35.
+    int units;
+    const W q =
+        ExpM1Reduced<W, std::is_same_v<W, MathWorking<F, 1>>>(r, units);
+    const W y = scalbn(q + W(1), static_cast<int>(k));
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 6), last,
+                               env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Expm1Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F(-1) : x;
+  if (x.is_zero()) return x;
+  // e^x - 1 = x + x^2/2 + ..., always above x.
+  if (x.raw_exponent() <= -(F::kPrecision + 3)) {
+    return RoundBeside(x, true, env);
+  }
+  const Wide1<F> wide = FloatAccess::Convert<Wide1<F>>(x, NearestEnv{});
+  if (wide >= Wide1<F>(F::kEmax + 2)) return RoundOverflow<F>(false, env);
+  // Then e^x < 2^-(P + 3), and e^x - 1 is just above -1.
+  if (wide <= Wide1<F>(-(F::kPrecision + 3))) {
+    return RoundBeside(F(-1), true, env);
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    std::int64_t k;
+    const W r = ReduceByLn2<W>(x, k);
+    int units;
+    W y = ExpM1Reduced<W, std::is_same_v<W, MathWorking<F, 1>>>(r, units);
+    if (k != 0) {
+      // |2^k e^r| <= 3.4 |2^k e^r - 1| for |x| >= ln 2 / 2.
+      y = scalbn(y + W(1), static_cast<int>(k)) - W(1);
+      units = 4 * units + 8;
+    }
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 4), last,
+                               env, result);
+  });
+}
+
+// The special cases shared by the logarithms of x. Returns true if they
+// decide the result.
+template <class F, class Env>
+bool LogSpecialCase(const F& x, const Env& env, F& result) {
+  if (x.is_nan()) {
+    result = FloatAccess::PropagateNaN(x, env);
+  } else if (x.is_zero()) {
+    env.raise(kFlagDivByZero);
+    result = F::Infinity(true);
+  } else if (x.signbit()) {
+    result = InvalidResult<F>(env);
+  } else if (x.is_inf()) {
+    result = x;
+  } else if (x == F(1)) {
+    result = F::Zero();
+  } else {
+    return false;
+  }
+  return true;
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F LogImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  F special;
+  if (LogSpecialCase(x, env, special)) return special;
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    int units;
+    std::int64_t e;
+    W log_m;
+    const W y = LogKernel<W, std::is_same_v<W, MathWorking<F, 1>>>(
+        FloatAccess::Convert<W>(x, NearestEnv{}), units, e, log_m);
+    return RoundTranscendental(y, W::kPrecision - LostBits(units), last, env,
+                               result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Log2Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  F special;
+  if (LogSpecialCase(x, env, special)) return special;
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    const MathConstants<W>& c = GetMathConstants<W>();
+    int units;
+    std::int64_t e;
+    W log_m;
+    LogKernel<W, std::is_same_v<W, MathWorking<F, 1>>>(
+        FloatAccess::Convert<W>(x, NearestEnv{}), units, e, log_m);
+    if (log_m.is_zero()) {
+      // A power of two: exact, unless the format cannot hold e.
+      result = FloatAccess::Convert<F>(e, env);
+      return true;
+    }
+    // |log2(m)| <= 1/2, so e + log2(m) adds at most 8 u.
+    W y = log_m * c.inv_ln2;
+    if (e != 0) y = W(e) + y;
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 8), last,
+                               env, result);
+  });
+}
+
+// Whether x is 10^t for some t >= 1, which it returns in t.
+template <class F>
+bool IsPowerOfTen(const F& x, std::int64_t& t) {
+  if (x.raw_exponent() < 3) return false;
+  t = LowestBitExponent(x);  // 10^t = 5^t 2^t.
+  if (t < 1) return false;
+  // 10^t lies in [2^floor(t log2 10), 2^(floor(t log2 10) + 1)).
+  const double estimate = static_cast<double>(t) * 3.32192809488736234787;
+  if (static_cast<double>(x.raw_exponent()) < estimate - 2 ||
+      static_cast<double>(x.raw_exponent()) > estimate + 2) {
+    return false;
+  }
+  return EqualsDecimal(x, BigUint(1), t);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Log10Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  F special;
+  if (LogSpecialCase(x, env, special)) return special;
+  std::int64_t t;
+  if (IsPowerOfTen(x, t)) return FloatAccess::Convert<F>(t, env);
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    const MathConstants<W>& c = GetMathConstants<W>();
+    int units;
+    std::int64_t e;
+    W log_m;
+    const W y = LogKernel<W, std::is_same_v<W, MathWorking<F, 1>>>(
+                    FloatAccess::Convert<W>(x, NearestEnv{}), units, e,
+                    log_m) *
+                c.inv_ln10;
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 4), last,
+                               env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Log1pImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) return x;
+  if (x.signbit()) {
+    if (x == F(-1)) {
+      env.raise(kFlagDivByZero);
+      return F::Infinity(true);
+    }
+    if (x < F(-1)) return InvalidResult<F>(env);
+  }
+  if (x.is_inf()) return x;
+  // log(1 + x) = x - x^2/2 + ..., always below x.
+  if (x.raw_exponent() <= -(F::kPrecision + 3)) {
+    return RoundBeside(x, false, env);
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
+    int units;
+    W y;
+    // The first format reduces 1 + x with tables, which needs 1 + x exact
+    // and short; the others only take that path from 1/4 up.
+    constexpr bool kFirst = std::is_same_v<W, MathWorking<F, 1>>;
+    constexpr int kKernelBelow = kFirst ? -13 : -2;
+    const std::int32_t ex = x.raw_exponent();
+    std::int64_t e;
+    W log_m;
+    if (ex < kKernelBelow) {
+      y = Log1pKernel(wx, units);
+    } else if (ex < F::kPrecision) {
+      // 1 + x is exact, with at most P + 14 bits.
+      y = LogKernel<W, kFirst>(W(1) + wx, units, e, log_m);
+    } else {
+      // 1 + x is exact unless x is large, where log(1 + x) >= 0.22 and the
+      // rounding of 1 + x adds below 5 u.
+      y = LogKernel(W(1) + wx, units, e, log_m);
+      units += 5;
+    }
+    return RoundTranscendental(y, W::kPrecision - LostBits(units), last, env,
+                               result);
+  });
+}
+
+}  // namespace detail
+
+// e^x.
+template <int P, int E>
+Float<P, E> exp(const Float<P, E>& x) {
+  return detail::ExpImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> exp(const Float<P, E>& x, Context& context) {
+  return detail::ExpImpl(x, detail::ContextEnv{context});
+}
+
+// 2^x.
+template <int P, int E>
+Float<P, E> exp2(const Float<P, E>& x) {
+  return detail::Exp2Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> exp2(const Float<P, E>& x, Context& context) {
+  return detail::Exp2Impl(x, detail::ContextEnv{context});
+}
+
+// e^x - 1, accurate for small x.
+template <int P, int E>
+Float<P, E> expm1(const Float<P, E>& x) {
+  return detail::Expm1Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> expm1(const Float<P, E>& x, Context& context) {
+  return detail::Expm1Impl(x, detail::ContextEnv{context});
+}
+
+// The natural logarithm. log(+-0) is -infinity and raises divide by zero, and
+// a negative x gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> log(const Float<P, E>& x) {
+  return detail::LogImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> log(const Float<P, E>& x, Context& context) {
+  return detail::LogImpl(x, detail::ContextEnv{context});
+}
+
+// The base-2 logarithm, exact for powers of two.
+template <int P, int E>
+Float<P, E> log2(const Float<P, E>& x) {
+  return detail::Log2Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> log2(const Float<P, E>& x, Context& context) {
+  return detail::Log2Impl(x, detail::ContextEnv{context});
+}
+
+// The base-10 logarithm, exact for powers of ten.
+template <int P, int E>
+Float<P, E> log10(const Float<P, E>& x) {
+  return detail::Log10Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> log10(const Float<P, E>& x, Context& context) {
+  return detail::Log10Impl(x, detail::ContextEnv{context});
+}
+
+// log(1 + x), accurate for small x. log1p(-1) is -infinity and raises divide
+// by zero, and x < -1 gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> log1p(const Float<P, E>& x) {
+  return detail::Log1pImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> log1p(const Float<P, E>& x, Context& context) {
+  return detail::Log1pImpl(x, detail::ContextEnv{context});
+}
+
+}  // namespace mpfix
+
+#endif  // MPFIX_MATH_H_

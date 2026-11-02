@@ -34,10 +34,13 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    than MPFR at every size, with shortest round-trip output as well.
 5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests:
    done, in `mpfix/eigen.h`, for Eigen 5.0.1. A Float of zero bytes is now +0,
-   since Eigen clears trivially copyable scalars with memset. Elementary
-   functions (exp, log and the like) are still missing.
-6. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
+   since Eigen clears trivially copyable scalars with memset.
+6. Elementary functions, correctly rounded in all modes with flags, in
+   `mpfix/math.h`. Done: exp, exp2, expm1, log, log2, log10, log1p, 1.1 to 7
+   times faster than MPFR. To do: pow, the trigonometric and hyperbolic
+   functions and their inverses, cbrt, hypot, and constants such as pi.
+7. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
    AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through
    Intel SDE.
-7. Hardening and release: long differential runs, TestFloat, sanitizers,
+8. Hardening and release: long differential runs, TestFloat, sanitizers,
    fuzzing, and a benchmark report.

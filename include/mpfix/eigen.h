@@ -7,10 +7,10 @@
 // stream's precision, or with Eigen::FullPrecision at max_digits10, which
 // reads back exactly.
 //
-// Eigen finds abs, sqrt, isnan, isinf and isfinite by argument-dependent
-// lookup. Elementary functions such as exp and log are not provided yet, so
-// the few algorithms that need them, among them the matrix functions module,
-// do not work with Float.
+// Eigen finds abs, sqrt, exp, log and the other functions of mpfix/math.h,
+// isnan, isinf and isfinite by argument-dependent lookup. The trigonometric
+// functions are not provided yet, so the algorithms that need them do not
+// work with Float.
 
 #ifndef MPFIX_EIGEN_H_
 #define MPFIX_EIGEN_H_
@@ -20,6 +20,7 @@
 
 #include "mpfix/charconv.h"
 #include "mpfix/float.h"
+#include "mpfix/math.h"
 
 namespace Eigen {
 

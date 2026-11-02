@@ -28,6 +28,14 @@ target_include_directories(bench_strings SYSTEM PRIVATE
 target_compile_options(bench_strings PRIVATE
   $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)
 
+add_executable(bench_math bench_math.cpp)
+target_link_libraries(bench_math PRIVATE mpfix
+  "${MPFIX_MPFR_LIBRARY}" "${MPFIX_GMP_LIBRARY}")
+target_include_directories(bench_math SYSTEM PRIVATE
+  "${MPFIX_BOOST_DIR}" "${MPFIX_GMP_INCLUDE_DIR}" "${MPFIX_MPFR_INCLUDE_DIR}")
+target_compile_options(bench_math PRIVATE
+  $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)
+
 # The batch prototype runs on Google Highway's vectors.
 FetchContent_Declare(highway
   GIT_REPOSITORY https://github.com/google/highway.git

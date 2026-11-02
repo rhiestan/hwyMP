@@ -2263,6 +2263,12 @@ struct FloatAccess {
                  std::size_t count, bool sticky, const Env& env) noexcept {
     return F::RoundSignificand(negative, exponent, limbs, count, sticky, env);
   }
+
+  // A NaN operand, quieted, raising invalid if it was signaling.
+  template <class F, class Env>
+  static F PropagateNaN(const F& x, const Env& env) noexcept {
+    return F::PropagateNaN(x, x, env);
+  }
 };
 
 template <class To, class From>
