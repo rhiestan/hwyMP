@@ -10,6 +10,7 @@
 
 #include <compare>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <tuple>
 #include <type_traits>
@@ -61,6 +62,22 @@ TEST(Float, Binary128KnownArithmetic) {
   ExpectBits(two - three, kOneHigh | kSignHigh, 0);
   ExpectBits(two * three, kSixHigh, 0);
   ExpectBits(-two * three, kSixHigh | kSignHigh, 0);
+}
+
+// Libraries such as Eigen clear arrays of trivially copyable scalars with
+// memset, so zero bytes must be +0.
+TEST(Float, ZeroBytesArePositiveZero) {
+  const auto check = [](auto x) {
+    std::memset(static_cast<void*>(&x), 0, sizeof(x));
+    EXPECT_TRUE(x.is_zero());
+    EXPECT_FALSE(x.signbit());
+    EXPECT_EQ(x.to_bits(), decltype(x)::Zero().to_bits());
+    EXPECT_EQ(x + decltype(x)::MinNormal(), decltype(x)::MinNormal());
+  };
+  check(binary128());
+  check(binary256());
+  check(binary512());
+  check(Float<4, 3>());
 }
 
 TEST(Float, CompoundAssignment) {

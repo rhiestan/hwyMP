@@ -1,7 +1,6 @@
 # Benchmarks
 
-Scalar results were measured on 2026-11-02, and the rest on 2026-11-01, on an
-AMD Ryzen 9 5950X (Zen 3, AVX2, no AVX-512) under
+Measured on 2026-11-02 on an AMD Ryzen 9 5950X (Zen 3, AVX2, no AVX-512) under
 Windows 11. One pinned thread at high priority, best of 25 runs over 1024 random
 operand pairs with exponents within ±8 and random signs. Nanoseconds per
 operation; lower is better. "dot step" is one operation of a multiply-add loop.
@@ -9,48 +8,56 @@ Square roots take positive operands. Boost has no correctly rounded fma for this
 type, so it has no fma column.
 
 - mpfix and Boost 1.92: Clang 22.1.2, `-O3 -march=native`.
-- GMP 6.3.0: Zen 3 assembly and tuning (`cmake/triplets/...-zen3.cmake`).
-- MPFR 4.2.2: its C code is compiled by MSVC, because a clang-cl build through
-  vcpkg did not work. This may understate MPFR, most of all at binary128, where
-  its time is spent in its own code rather than in GMP's assembly.
+- GMP 6.3.0 and MPFR 4.3.0-dev: built as DLLs with MSYS2's GCC, GMP as a fat
+  binary that picks its assembly for the running CPU.
 
 "MPFR" uses its native wide exponent range, which favours it. "MPFR IEEE" adds
 the steps that IEEE-identical results need, matching what mpfix delivers.
+
+An earlier MPFR 4.2.2 build through vcpkg had its C code compiled by MSVC, and
+was much slower: at binary128 its add, mul and sqrt took 12.0, 14.8 and 28.5 ns,
+against 8.4, 7.3 and 14.0 here. Benchmarks against MPFR on Windows should use a
+GCC build.
 
 ## Scalar
 
 | Format | Library | add | mul | div | sqrt | fma | dot step |
 |---|---|---:|---:|---:|---:|---:|---:|
-| binary128 | mpfix | 7.93 | 7.38 | 14.84 | 19.91 | 23.42 | 10.50 |
-| | MPFR | 11.97 | 14.82 | 26.90 | 28.50 | 41.81 | 13.20 |
-| | MPFR IEEE | 16.88 | 20.53 | 31.69 | 32.33 | 48.23 | 19.35 |
-| | Boost | 35.86 | 47.99 | 178.31 | 282.44 | | 41.56 |
-| binary256 | mpfix | 12.06 | 14.19 | 29.72 | 62.46 | 36.48 | 15.18 |
-| | MPFR | 19.08 | 35.63 | 104.53 | 116.61 | 54.90 | 25.63 |
-| | MPFR IEEE | 24.90 | 41.51 | 111.40 | 122.96 | 60.84 | 30.67 |
-| | Boost | 47.11 | 72.90 | 416.67 | 536.17 | | 54.30 |
-| binary512 | mpfix | 15.74 | 51.80 | 81.12 | 140.59 | 78.96 | 32.02 |
-| | MPFR | 21.41 | 56.05 | 157.43 | 251.44 | 77.15 | 33.71 |
-| | MPFR IEEE | 27.01 | 60.80 | 166.07 | 258.67 | 83.38 | 38.58 |
-| | Boost | 61.77 | 166.68 | 1069.02 | 1086.34 | | 94.27 |
+| binary128 | mpfix | 8.20 | 7.53 | 14.93 | 20.49 | 24.23 | 10.92 |
+| | MPFR | 8.37 | 7.31 | 16.17 | 13.95 | 30.27 | 7.78 |
+| | MPFR IEEE | 13.36 | 13.20 | 20.32 | 19.47 | 36.45 | 13.10 |
+| | Boost | 36.66 | 48.75 | 182.81 | 282.39 | | 41.92 |
+| binary256 | mpfix | 12.30 | 14.76 | 30.39 | 63.76 | 37.06 | 15.53 |
+| | MPFR | 15.60 | 31.92 | 73.56 | 104.82 | 42.13 | 20.00 |
+| | MPFR IEEE | 20.45 | 33.82 | 79.30 | 111.16 | 47.46 | 26.06 |
+| | Boost | 46.59 | 75.00 | 424.64 | 547.42 | | 55.02 |
+| binary512 | mpfix | 16.73 | 48.93 | 84.06 | 143.84 | 80.27 | 32.56 |
+| | MPFR | 17.91 | 57.29 | 112.74 | 216.89 | 75.54 | 31.31 |
+| | MPFR IEEE | 22.70 | 62.49 | 117.64 | 220.71 | 81.25 | 36.39 |
+| | Boost | 63.36 | 169.23 | 1087.66 | 1121.13 | | 96.05 |
 
-mpfix's fma is a straightforward double-width addition and has not been tuned.
-At binary512 it is level with MPFR rather than ahead.
+Against MPFR IEEE, which gives the same results, mpfix is faster everywhere
+except binary128 square root, and level on binary512 fma. Native MPFR is ahead
+on binary128 square root (14.0 against 20.5 ns), on the binary128 dot step, and
+on binary512 fma and dot step. These are the targets for tuning: mpfix's fma is
+a straightforward double-width addition, and its square root has no special
+case for two limbs.
 
 ### Full-limb precision
 
 Full-limb formats cost mpfix little: 128, 256 and 512 bits run at the same speed
 as binary128, binary256 and binary512, except for division at 128 and 256 bits,
-which needs one more quotient limb.
+which needs one more quotient limb. MPFR is slower at full limbs, most of all
+for square root.
 
 | Format | Library | add | mul | div | sqrt | fma | dot step |
 |---|---|---:|---:|---:|---:|---:|---:|
-| full 128 | mpfix | 8.02 | 7.42 | 17.55 | 19.71 | 24.03 | 10.25 |
-| | MPFR | 11.06 | 27.09 | 42.47 | 113.70 | 42.79 | 17.41 |
-| full 256 | mpfix | 11.87 | 14.22 | 34.97 | 63.46 | 36.14 | 14.96 |
-| | MPFR | 18.88 | 35.68 | 103.95 | 169.48 | 54.97 | 25.48 |
-| full 512 | mpfix | 16.34 | 48.62 | 84.12 | 138.23 | 79.02 | 32.27 |
-| | MPFR | 21.58 | 56.52 | 157.96 | 268.47 | 79.67 | 33.75 |
+| full 128 | mpfix | 8.32 | 7.58 | 17.57 | 20.22 | 23.91 | 10.66 |
+| | MPFR | 7.88 | 13.95 | 36.02 | 101.39 | 32.60 | 9.61 |
+| full 256 | mpfix | 12.11 | 14.65 | 35.82 | 64.25 | 37.08 | 15.45 |
+| | MPFR | 15.38 | 28.40 | 74.20 | 143.93 | 44.45 | 20.21 |
+| full 512 | mpfix | 16.12 | 48.94 | 85.88 | 143.78 | 80.42 | 32.43 |
+| | MPFR | 17.65 | 57.43 | 111.38 | 231.01 | 77.16 | 31.23 |
 
 ### MSVC
 
@@ -66,9 +73,9 @@ square root.
 
 ## Strings
 
-`bench/bench_strings.cpp`, measured on 2026-11-02 with the same setup: best of
-15 runs over 512 random values, either near 1 (binary exponents within ±8) or
-"wide" (binary exponents within ±1000). Nanoseconds per conversion.
+`bench/bench_strings.cpp`, with the same setup: best of 15 runs over 512 random
+values, either near 1 (binary exponents within ±8) or "wide" (binary exponents
+within ±1000). Nanoseconds per conversion.
 
 - **print:** enough significant digits to read back (36, 73 and 149), in
   scientific notation: `to_chars` with a precision, `mpfr_get_str`, and Boost's
@@ -81,24 +88,27 @@ All mpfix conversions are correctly rounded and raise the IEEE flags.
 
 | Format | Values | Library | print | shortest | parse |
 |---|---|---|---:|---:|---:|
-| binary128 | near 1 | mpfix | 341 | 966 | 144 |
-| | | MPFR | 480 | | 347 |
-| | | Boost | 784 | | 824 |
-| binary256 | near 1 | mpfix | 452 | 1387 | 212 |
-| | | MPFR | 598 | | 472 |
-| | | Boost | 1501 | | 1554 |
-| binary512 | near 1 | mpfix | 779 | 2110 | 479 |
-| | | MPFR | 857 | | 667 |
-| | | Boost | 4089 | | 3644 |
-| binary128 | wide | mpfix | 350 | 929 | 150 |
-| | | MPFR | 577 | | 397 |
-| | | Boost | 1316 | | 976 |
-| binary256 | wide | mpfix | 477 | 1251 | 216 |
-| | | MPFR | 688 | | 508 |
-| | | Boost | 2137 | | 1645 |
-| binary512 | wide | mpfix | 805 | 2279 | 474 |
-| | | MPFR | 938 | | 684 |
-| | | Boost | 4627 | | 3768 |
+| binary128 | near 1 | mpfix | 342 | 965 | 151 |
+| | | MPFR | 356 | | 371 |
+| | | Boost | 794 | | 825 |
+| binary256 | near 1 | mpfix | 446 | 1261 | 229 |
+| | | MPFR | 455 | | 494 |
+| | | Boost | 1538 | | 1559 |
+| binary512 | near 1 | mpfix | 780 | 2089 | 441 |
+| | | MPFR | 665 | | 668 |
+| | | Boost | 3271 | | 3398 |
+| binary128 | wide | mpfix | 353 | 931 | 156 |
+| | | MPFR | 431 | | 429 |
+| | | Boost | 1319 | | 974 |
+| binary256 | wide | mpfix | 474 | 1252 | 231 |
+| | | MPFR | 508 | | 525 |
+| | | Boost | 2120 | | 1604 |
+| binary512 | wide | mpfix | 804 | 2199 | 438 |
+| | | MPFR | 704 | | 713 |
+| | | Boost | 3855 | | 3335 |
+
+Parsing is 1.5 to 2.5 times faster than MPFR. Printing is level with MPFR at
+binary128 and binary256, and about 15% slower at binary512.
 
 Conversions are computed with interval arithmetic in a slightly wider `Float`,
 which decides nearly every case; the rest fall back to exact big-integer
@@ -125,8 +135,10 @@ stores arrays of `Float`, so it would pay that for each input and output.
 
 ## Gate decision
 
-- **Scalar against MPFR: passed.** mpfix is faster on every operation at every
-  size, against both MPFR configurations.
+- **Scalar against MPFR: passed when measured** against an MSVC build of MPFR,
+  with mpfix faster on every operation. Against the faster GCC build above it
+  still beats MPFR IEEE nearly everywhere, but native MPFR wins some binary128
+  operations and binary512 fma.
 - **Scalar against Boost, target 5x: not met.** Add is 3.8x to 4.5x and mul is
   3.5x to 6.6x. MPFR is the goal that matters, so this does not block anything.
 - **Batch on AVX2, target 1.2x: failed.** Batch stays out of the plan for AVX2.

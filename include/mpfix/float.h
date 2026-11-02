@@ -368,16 +368,16 @@ class Float {
   Bits to_bits() const noexcept {
     Limbs trailing = limbs_;
     limb_t biased;
-    if (exponent_ == kExpNaN || exponent_ == kExpInfinity) {
+    if (Exponent() == kExpNaN || Exponent() == kExpInfinity) {
       biased = (limb_t{1} << E) - 1;
       trailing[kLimbs - 1] &= ~kTopBit;
-    } else if (exponent_ == kExpZero) {
+    } else if (Exponent() == kExpZero) {
       biased = 0;
-    } else if (exponent_ < kEmin) {
+    } else if (Exponent() < kEmin) {
       biased = 0;
-      detail::ShiftRight(trailing, kEmin - exponent_);
+      detail::ShiftRight(trailing, kEmin - Exponent());
     } else {
-      biased = static_cast<limb_t>(exponent_ + kEmax);
+      biased = static_cast<limb_t>(Exponent() + kEmax);
       trailing[kLimbs - 1] &= ~kTopBit;
     }
     detail::ShiftRight(trailing, kSpareBits);
@@ -469,25 +469,33 @@ class Float {
   // --- Classification ---
 
   bool signbit() const noexcept { return negative_ != 0; }
-  bool is_nan() const noexcept { return exponent_ == kExpNaN; }
-  bool is_inf() const noexcept { return exponent_ == kExpInfinity; }
-  bool is_zero() const noexcept { return exponent_ == kExpZero; }
-  bool is_finite() const noexcept { return exponent_ < kExpInfinity; }
+  bool is_nan() const noexcept { return Exponent() == kExpNaN; }
+  bool is_inf() const noexcept { return Exponent() == kExpInfinity; }
+  bool is_zero() const noexcept { return Exponent() == kExpZero; }
+  bool is_finite() const noexcept { return Exponent() < kExpInfinity; }
   bool is_subnormal() const noexcept {
-    return !is_zero() && exponent_ < kEmin;
+    return !is_zero() && Exponent() < kEmin;
   }
   bool is_normal() const noexcept {
-    return exponent_ >= kEmin && exponent_ < kExpInfinity;
+    return Exponent() >= kEmin && Exponent() < kExpInfinity;
   }
   bool is_signaling() const noexcept {
     return is_nan() && (limbs_[kLimbs - 1] & kQuietBit) == 0;
   }
 
+  // Free forms, as <cmath> has them for the built-in types, so that generic
+  // code calling them unqualified finds these.
+  friend bool isnan(const Float& x) noexcept { return x.is_nan(); }
+  friend bool isinf(const Float& x) noexcept { return x.is_inf(); }
+  friend bool isfinite(const Float& x) noexcept { return x.is_finite(); }
+  friend bool isnormal(const Float& x) noexcept { return x.is_normal(); }
+  friend bool signbit(const Float& x) noexcept { return x.signbit(); }
+
   FloatClass classify() const noexcept {
     if (is_nan()) return FloatClass::kNaN;
     if (is_inf()) return FloatClass::kInfinite;
     if (is_zero()) return FloatClass::kZero;
-    return exponent_ < kEmin ? FloatClass::kSubnormal : FloatClass::kNormal;
+    return Exponent() < kEmin ? FloatClass::kSubnormal : FloatClass::kNormal;
   }
 
   // --- Sign operations: these never raise flags, even for signaling NaNs ---
@@ -721,7 +729,7 @@ class Float {
 
   // --- Raw access, for tests and for interoperating with other libraries ---
 
-  std::int32_t raw_exponent() const noexcept { return exponent_; }
+  std::int32_t raw_exponent() const noexcept { return Exponent(); }
   const Limbs& raw_limbs() const noexcept { return limbs_; }
 
   // `limbs` must be normalized and `exponent` within the format's range.
@@ -756,11 +764,18 @@ class Float {
     limb_t rest;
   };
 
+  static constexpr std::uint32_t Bias(std::int32_t exponent) noexcept {
+    return static_cast<std::uint32_t>(exponent) ^ 0x80000000u;
+  }
+  constexpr std::int32_t Exponent() const noexcept {
+    return static_cast<std::int32_t>(biased_exponent_ ^ 0x80000000u);
+  }
+
   static Float FromParts(bool negative, std::int32_t exponent,
                          const Limbs& limbs) noexcept {
     Float result;
     result.limbs_ = limbs;
-    result.exponent_ = exponent;
+    result.biased_exponent_ = Bias(exponent);
     result.negative_ = negative ? 1 : 0;
     return result;
   }
@@ -820,7 +835,7 @@ class Float {
   }
 
   static bool IsRegular(const Float& x) noexcept {
-    return x.exponent_ != kExpZero && x.exponent_ < kExpInfinity;
+    return x.Exponent() != kExpZero && x.Exponent() < kExpInfinity;
   }
 
   // --- Rounding ---
@@ -1065,12 +1080,12 @@ class Float {
       return AddSpecial(a, b, b_sign, env);
     }
 
-    const bool swap = a.exponent_ < b.exponent_;
+    const bool swap = a.Exponent() < b.Exponent();
     const Limbs* big = swap ? &b.limbs_ : &a.limbs_;
     const Limbs* lesser = swap ? &a.limbs_ : &b.limbs_;
-    std::int32_t exponent = swap ? b.exponent_ : a.exponent_;
-    std::int32_t distance = swap ? b.exponent_ - a.exponent_
-                                 : a.exponent_ - b.exponent_;
+    std::int32_t exponent = swap ? b.Exponent() : a.Exponent();
+    std::int32_t distance = swap ? b.Exponent() - a.Exponent()
+                                 : a.Exponent() - b.Exponent();
     bool negative = (swap ? b_sign : a.negative_) != 0;
 
     if (a.negative_ == b_sign) {
@@ -1197,7 +1212,7 @@ class Float {
         static_cast<int>(value.limbs[kLimbs - 1] >> (kLimbBits - 1)) ^ 1;
     ShiftLeftByBit(value, shift);
     value.rest |= lost != 0 ? 1 : 0;
-    const std::int32_t exponent = a.exponent_ + b.exponent_ + 1 - shift;
+    const std::int32_t exponent = a.Exponent() + b.Exponent() + 1 - shift;
     return Finish(negative, exponent, value, env);
   }
 
@@ -1387,7 +1402,7 @@ class Float {
                    ((quotient[1] << 1) << complement);
     }
     value.rest |= detail::IsZero(r) ? 0 : 1;
-    const std::int32_t exponent = a.exponent_ - b.exponent_ - 1 + integer_part;
+    const std::int32_t exponent = a.Exponent() - b.Exponent() - 1 + integer_part;
     return Finish(negative, exponent, value, env);
   }
 
@@ -1411,7 +1426,7 @@ class Float {
     // root fills L limbs. An odd exponent becomes even by doubling the
     // significand.
     constexpr std::size_t kWide = 2 * kLimbs;
-    const int shift = (x.exponent_ & 1) ^ 1;
+    const int shift = (x.Exponent() & 1) ^ 1;
     const int complement = kLimbBits - 1 - shift;
     std::array<limb_t, kWide> rem{};
     rem[kLimbs - 1] = (x.limbs_[0] << 1) << complement;
@@ -1447,7 +1462,7 @@ class Float {
     Extended value;
     value.limbs = root;
     value.rest = (above_half ? kTopBit : 0) | (detail::IsZero(rem) ? 0 : 1);
-    return Finish(false, x.exponent_ >> 1, value, env);
+    return Finish(false, x.Exponent() >> 1, value, env);
   }
 
   // Finds limb j of the root and updates the remainder. Limbs above j are final,
@@ -1576,7 +1591,7 @@ class Float {
     Wide big{};
     Wide lesser{};
     for (std::size_t i = 0; i < 2 * kLimbs; ++i) big[i + 1] = exact[i];
-    std::int32_t big_exponent = a.exponent_ + b.exponent_ + 1;
+    std::int32_t big_exponent = a.Exponent() + b.Exponent() + 1;
     if ((big[kWide - 1] & kTopBit) == 0) {
       detail::ShiftLeft(big, 1);
       --big_exponent;
@@ -1584,7 +1599,7 @@ class Float {
     for (std::size_t i = 0; i < kLimbs; ++i) {
       lesser[i + kLimbs + 1] = c.limbs_[i];
     }
-    std::int32_t small_exponent = c.exponent_;
+    std::int32_t small_exponent = c.Exponent();
     bool big_negative = product_negative;
     bool small_negative = c.negative_ != 0;
 
@@ -1676,7 +1691,7 @@ class Float {
 
     const bool negative = x.negative_ != 0;
     const Limbs& divisor = y.limbs_;
-    const std::int32_t distance = x.exponent_ - y.exponent_;
+    const std::int32_t distance = x.Exponent() - y.Exponent();
     if (distance < -1) return x;  // |x| < |y| / 2, so the quotient rounds to 0.
     if (distance == -1) {
       // |x| < |y|, and the quotient rounds to 1 exactly when 2|x| > |y|.
@@ -1689,7 +1704,7 @@ class Float {
       for (std::size_t i = 0; i < kLimbs; ++i) {
         r[i] = sbb(doubled[i], x.limbs_[i], borrow);
       }
-      return NormalizedExact(!negative, y.exponent_ - 1, r);
+      return NormalizedExact(!negative, y.Exponent() - 1, r);
     }
 
     // Long division, keeping the remainder r and the quotient's lowest bit.
@@ -1740,7 +1755,7 @@ class Float {
       }
       result_negative = !negative;
     }
-    return NormalizedExact(result_negative, y.exponent_, r);
+    return NormalizedExact(result_negative, y.Exponent(), r);
   }
 
   // --- Rounding to integers ---
@@ -1748,12 +1763,12 @@ class Float {
   template <class Env>
   static Float RoundToIntegralImpl(const Float& x, const Env& env) noexcept {
     if (x.is_nan()) return PropagateNaN(x, x, env);
-    if (!IsRegular(x) || x.exponent_ >= P - 1) return x;
+    if (!IsRegular(x) || x.Exponent() >= P - 1) return x;
 
     const bool negative = x.negative_ != 0;
-    if (x.exponent_ < 0) {
-      const bool round_bit = x.exponent_ == -1;
-      const bool sticky = x.exponent_ < -1 || x.limbs_ != TopBitOnly();
+    if (x.Exponent() < 0) {
+      const bool round_bit = x.Exponent() == -1;
+      const bool sticky = x.Exponent() < -1 || x.limbs_ != TopBitOnly();
       env.raise(kFlagInexact);
       if (detail::ShouldRoundUp(env.rounding(), negative, false, round_bit,
                                 sticky)) {
@@ -1763,7 +1778,7 @@ class Float {
     }
 
     constexpr int kTotalBits = static_cast<int>(kLimbs) * kLimbBits;
-    const int count = kTotalBits - 1 - x.exponent_;
+    const int count = kTotalBits - 1 - x.Exponent();
     Limbs limbs = x.limbs_;
     bool is_odd = false;
     bool round_bit = false;
@@ -1773,7 +1788,7 @@ class Float {
     env.raise(kFlagInexact);
     detail::ShiftRight(limbs, count);
     detail::ShiftLeft(limbs, count);
-    std::int32_t exponent = x.exponent_;
+    std::int32_t exponent = x.Exponent();
     if (detail::ShouldRoundUp(env.rounding(), negative, is_odd, round_bit,
                               sticky) &&
         IncrementAtBit(limbs, count)) {
@@ -1840,7 +1855,7 @@ class Float {
     // Clamping keeps the sum in range without changing any result, since a
     // value this far out overflows or vanishes whatever its significand.
     const std::int64_t limit = std::int64_t{1} << (E + 1);
-    std::int64_t exponent = std::int64_t{x.exponent_} + n;
+    std::int64_t exponent = std::int64_t{x.Exponent()} + n;
     if (exponent > limit + P) exponent = limit + P;
     if (exponent < -limit - P) exponent = -limit - P;
     Extended value;
@@ -1852,7 +1867,7 @@ class Float {
 
   template <class Env>
   static int IlogbImpl(const Float& x, const Env& env) noexcept {
-    if (IsRegular(x)) return x.exponent_;
+    if (IsRegular(x)) return x.Exponent();
     env.raise(kFlagInvalid);
     if (x.is_nan()) return kIlogbNaN;
     return x.is_zero() ? kIlogbZero : kIlogbInfinity;
@@ -1866,10 +1881,10 @@ class Float {
       env.raise(kFlagDivByZero);
       return Infinity(true);
     }
-    if (x.exponent_ == 0) return Zero(false);
-    const bool negative = x.exponent_ < 0;
+    if (x.Exponent() == 0) return Zero(false);
+    const bool negative = x.Exponent() < 0;
     const limb_t magnitude = static_cast<limb_t>(
-        negative ? -std::int64_t{x.exponent_} : std::int64_t{x.exponent_});
+        negative ? -std::int64_t{x.Exponent()} : std::int64_t{x.Exponent()});
     const int leading = countl_zero(magnitude);
     Extended value;
     value.limbs = Limbs{};
@@ -1932,7 +1947,7 @@ class Float {
     }
     if (x.is_inf()) return Infinity(negative);
     if (x.is_zero()) return Zero(negative);
-    return RoundSignificand(negative, x.exponent_, x.limbs_.data(),
+    return RoundSignificand(negative, x.Exponent(), x.limbs_.data(),
                             Source::kLimbs, false, env);
   }
 
@@ -2013,7 +2028,7 @@ class Float {
         result = 0;
         for (std::size_t i = Native::kLimbs; i-- > 0;) {
           const int scale =
-              x.exponent_ - (kLimbBits - 1) -
+              x.Exponent() - (kLimbBits - 1) -
               static_cast<int>(Native::kLimbs - 1 - i) * kLimbBits;
           result += std::ldexp(static_cast<T>(x.limbs_[i]), scale);
         }
@@ -2043,13 +2058,13 @@ class Float {
     }
     limb_t magnitude = 0;
     if (!rounded.is_zero()) {
-      if (rounded.exponent_ >= kLimbBits) {
+      if (rounded.Exponent() >= kLimbBits) {
         env.raise(kFlagInvalid);
         return saturated;
       }
       // An integer below 2^64 lies entirely in the top limb.
       magnitude =
-          rounded.limbs_[kLimbs - 1] >> (kLimbBits - 1 - rounded.exponent_);
+          rounded.limbs_[kLimbs - 1] >> (kLimbBits - 1 - rounded.Exponent());
       const limb_t limit =
           static_cast<limb_t>((Limits::max)()) + (negative ? 1 : 0);
       if ((negative && !Limits::is_signed) || magnitude > limit) {
@@ -2071,8 +2086,8 @@ class Float {
                               : std::partial_ordering::greater;
     }
     int order = 0;
-    if (a.exponent_ != b.exponent_) {
-      order = a.exponent_ < b.exponent_ ? -1 : 1;
+    if (a.Exponent() != b.Exponent()) {
+      order = a.Exponent() < b.Exponent() ? -1 : 1;
     } else {
       order = detail::CompareLimbs(a.limbs_, b.limbs_);
     }
@@ -2083,7 +2098,10 @@ class Float {
   }
 
   Limbs limbs_;
-  std::int32_t exponent_;
+  // The exponent is stored offset by 2^31, so that kExpZero is stored as 0
+  // and a Float whose bytes are all zero is +0: memset and calloc give zeros,
+  // as libraries such as Eigen assume of trivially copyable scalars.
+  std::uint32_t biased_exponent_;
   std::uint32_t negative_;
 };
 
@@ -2170,5 +2188,64 @@ I to_integer_exact(const Float<P, E>& x, Rounding mode,
 }
 
 }  // namespace mpfix
+
+// The limits follow the conventions of the built-in types: min() is the
+// smallest normal value, and min_exponent and max_exponent are one more than
+// the IEEE exponents, as for a significand in [0.5, 1). The values are not
+// constexpr, since Float's operations are not.
+namespace std {
+
+template <int P, int E>
+class numeric_limits<mpfix::Float<P, E>> {
+  using F = mpfix::Float<P, E>;
+
+ public:
+  static constexpr bool is_specialized = true;
+  static constexpr bool is_signed = true;
+  static constexpr bool is_integer = false;
+  static constexpr bool is_exact = false;
+  static constexpr bool has_infinity = true;
+  static constexpr bool has_quiet_NaN = true;
+  static constexpr bool has_signaling_NaN = true;
+  static constexpr bool has_denorm_loss = false;
+  static constexpr std::float_round_style round_style = std::round_to_nearest;
+  static constexpr bool is_iec559 = true;
+  static constexpr bool is_bounded = true;
+  static constexpr bool is_modulo = false;
+  static constexpr int radix = 2;
+  static constexpr int digits = P;
+  // floor((P - 1) log10 2) and ceil(P log10 2) + 1, from log10 2 < 0.30103.
+  static constexpr int digits10 = static_cast<int>((P - 1) * 30103LL / 100000);
+  static constexpr int max_digits10 =
+      static_cast<int>((P * 30103LL + 99999) / 100000) + 1;
+  static constexpr int min_exponent = F::kEmin + 1;
+  static constexpr int max_exponent = F::kEmax + 1;
+  // The smallest n with 10^n normal, and the largest with 10^n finite: for
+  // double, -307 and 308.
+  static constexpr int min_exponent10 =
+      -static_cast<int>((-F::kEmin) * 30103LL / 100000);
+  static constexpr int max_exponent10 =
+      static_cast<int>((F::kEmax + 1) * 30103LL / 100000);
+  static constexpr bool traps = false;
+  // Tininess is detected after rounding.
+  static constexpr bool tinyness_before = false;
+
+  // Parenthesized against the min and max macros of <windows.h>.
+  static F(min)() noexcept { return F::MinNormal(); }
+  static F(max)() noexcept { return F::MaxFinite(); }
+  static F lowest() noexcept { return F::MaxFinite(true); }
+  static F epsilon() noexcept {
+    return scalbn(F::MinNormal(), 1 - P - F::kEmin);
+  }
+  static F round_error() noexcept {
+    return scalbn(F::MinNormal(), -1 - F::kEmin);
+  }
+  static F infinity() noexcept { return F::Infinity(); }
+  static F quiet_NaN() noexcept { return F::QuietNaN(); }
+  static F signaling_NaN() noexcept { return F::SignalingNaN(); }
+  static F denorm_min() noexcept { return F::MinSubnormal(); }
+};
+
+}  // namespace std
 
 #endif  // MPFIX_FLOAT_H_

@@ -32,7 +32,10 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
 4. Correctly rounded conversions: float, double, integers, between formats, and
    strings in both directions: done. Decimal printing and parsing are faster
    than MPFR at every size, with shortest round-trip output as well.
-5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests.
+5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests:
+   done, in `mpfix/eigen.h`, for Eigen 5.0.1. A Float of zero bytes is now +0,
+   since Eigen clears trivially copyable scalars with memset. Elementary
+   functions (exp, log and the like) are still missing.
 6. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
    AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through
    Intel SDE.

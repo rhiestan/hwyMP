@@ -25,7 +25,25 @@ std::cout << std::setprecision(40) << y << '\n';
 
 `to_chars` and `from_chars` follow `<charconv>`, with an optional `Context`.
 The formats are `binary128`, `binary256` and `binary512`, or any
-`mpfix::Float<P, E>`.
+`mpfix::Float<P, E>`. `std::numeric_limits` is specialized for all of them.
+
+### With Eigen
+
+```cpp
+#include <Eigen/Dense>
+#include "mpfix/eigen.h"  // NumTraits for Float; includes mpfix/charconv.h.
+
+using Matrix = Eigen::Matrix<mpfix::binary256, Eigen::Dynamic, Eigen::Dynamic>;
+
+Matrix a = Matrix::Random(10, 10);
+Matrix x = a.partialPivLu().solve(Matrix::Ones(10, 1));
+std::cout << x.format(Eigen::IOFormat(Eigen::FullPrecision)) << '\n';
+```
+
+Tested with Eigen 5.0.1: the LU, QR, Cholesky, SVD and self-adjoint
+eigenvalue decompositions, the real Schur form, inverses and determinants.
+Modules that need elementary functions such as `exp` and `log` do not work
+yet, since mpfix does not provide them.
 
 ## Building
 
