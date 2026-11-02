@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # Every push to any branch, so work in progress is checked on all platforms.
   push:
-    branches: [main]
+  # Pull requests from forks, whose pushes do not trigger this repository.
   pull_request:
 
 permissions:
