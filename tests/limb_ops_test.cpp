@@ -253,5 +253,67 @@ TEST(LimbOps, DoubleShifts) {
   EXPECT_EQ(shift_right_2(hi, lo, 4), 0xFFEDCBA987654321u);
 }
 
+// Checks q * d + r == u and r < d for one 3-by-2 division.
+void CheckDiv3by2(limb_t u2, limb_t u1, limb_t u0, limb_t d1, limb_t d0) {
+  const limb_t v = reciprocal_3by2(d1, d0);
+  limb_t r1;
+  limb_t r0;
+  const limb_t q = div_3by2(u2, u1, u0, d1, d0, v, r1, r0);
+
+  limb_t high;
+  limb_t low = mul_wide(q, d0, high);
+  limb_t top;
+  limb_t middle = mul_wide(q, d1, top);
+  carry_t carry = 0;
+  middle = adc(middle, high, carry);
+  top += carry;
+  carry = 0;
+  low = adc(low, r0, carry);
+  middle = adc(middle, r1, carry);
+  top += carry;
+  ASSERT_EQ(low, u0);
+  ASSERT_EQ(middle, u1);
+  ASSERT_EQ(top, u2);
+  ASSERT_TRUE(r1 < d1 || (r1 == d1 && r0 < d0));
+}
+
+TEST(LimbOps, Reciprocal3by2Definition) {
+  EXPECT_EQ(reciprocal_3by2(kMax, kMax), 0u);
+  EXPECT_EQ(reciprocal_3by2(limb_t{1} << 63, 0), kMax);
+}
+
+TEST(LimbOps, Div3by2) {
+  Xoshiro256 random(99);
+  const limb_t edges[] = {0, 1, 2, kMax, kMax - 1, limb_t{1} << 63,
+                          (limb_t{1} << 63) - 1, (limb_t{1} << 63) + 1};
+  for (const limb_t d1 : edges) {
+    if ((d1 >> 63) == 0) continue;
+    for (const limb_t d0 : edges) {
+      for (const limb_t u2 : edges) {
+        for (const limb_t u1 : edges) {
+          for (const limb_t u0 : edges) {
+            if (u2 > d1 || (u2 == d1 && u1 >= d0)) continue;
+            CheckDiv3by2(u2, u1, u0, d1, d0);
+          }
+        }
+      }
+    }
+  }
+  for (int i = 0; i < 2000000; ++i) {
+    const limb_t d1 = random.Next() | (limb_t{1} << 63);
+    const limb_t d0 = random.Next();
+    limb_t u2 = random.Next();
+    limb_t u1 = random.Next();
+    if (i % 2 == 0) {
+      // Numerators just below the divisor give the largest quotients.
+      u2 = d1;
+      u1 = d0 - 1;
+      if (d0 == 0) continue;
+    }
+    if (u2 > d1 || (u2 == d1 && u1 >= d0)) u2 = d1 - 1;
+    CheckDiv3by2(u2, u1, random.Next(), d1, d0);
+  }
+}
+
 }  // namespace
 }  // namespace hwymp

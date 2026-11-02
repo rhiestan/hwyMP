@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Lowest-level 64-bit limb primitives: add/subtract with carry, widening
-// multiply, 128-by-64 division, shifts and bit scans.
+// multiply, 128-by-64 and 192-by-128 division, shifts and bit scans.
 //
 // Every operation has a portable constexpr implementation in
 // hwymp::detail::portable. The public functions forward to compiler intrinsics
@@ -282,6 +282,68 @@ HWYMP_ALWAYS_INLINE constexpr limb_t div_2by1(limb_t hi, limb_t lo, limb_t d,
 #else
   return detail::portable::div_2by1(hi, lo, d, remainder);
 #endif
+}
+
+// Returns floor((2^192 - 1) / (d1:d0)) - 2^64, for use with div_3by2. Requires
+// the top bit of d1 to be set. Method from Moller and Granlund, "Improved
+// division by invariant integers", IEEE Trans. Computers, 2011.
+HWYMP_ALWAYS_INLINE limb_t reciprocal_3by2(limb_t d1, limb_t d0) noexcept {
+  limb_t unused;
+  limb_t v = div_2by1(~d1, ~limb_t{0}, d1, unused);
+  limb_t p = d1 * v + d0;
+  if (p < d0) {
+    --v;
+    if (p >= d1) {
+      --v;
+      p -= d1;
+    }
+    p -= d1;
+  }
+  limb_t t1;
+  const limb_t t0 = mul_wide(v, d0, t1);
+  p += t1;
+  if (p < t1) {
+    --v;
+    if (p > d1 || (p == d1 && t0 >= d0)) --v;
+  }
+  return v;
+}
+
+// Returns (u2:u1:u0) / (d1:d0) and stores the remainder in r1:r0. `v` must come
+// from reciprocal_3by2(d1, d0), and u2:u1 must be below d1:d0. Same source.
+HWYMP_ALWAYS_INLINE limb_t div_3by2(limb_t u2, limb_t u1, limb_t u0, limb_t d1,
+                                    limb_t d0, limb_t v, limb_t& r1,
+                                    limb_t& r0) noexcept {
+  limb_t q1;
+  limb_t q0 = mul_wide(v, u2, q1);
+  carry_t carry = 0;
+  q0 = adc(q0, u1, carry);
+  q1 = adc(q1, u2, carry);
+
+  limb_t t1;
+  const limb_t t0 = mul_wide(d0, q1, t1);
+  carry_t borrow = 0;
+  r0 = sbb(u0, t0, borrow);
+  r1 = sbb(u1 - q1 * d1, t1, borrow);
+  borrow = 0;
+  r0 = sbb(r0, d0, borrow);
+  r1 = sbb(r1, d1, borrow);
+  ++q1;
+
+  // This condition is unpredictable, so it is applied through a mask.
+  const limb_t mask = limb_t{0} - static_cast<limb_t>(r1 >= q0);
+  q1 += mask;
+  carry = 0;
+  r0 = adc(r0, d0 & mask, carry);
+  r1 = adc(r1, d1 & mask, carry);
+
+  if (r1 > d1 || (r1 == d1 && r0 >= d0)) [[unlikely]] {
+    ++q1;
+    borrow = 0;
+    r0 = sbb(r0, d0, borrow);
+    r1 = sbb(r1, d1, borrow);
+  }
+  return q1;
 }
 
 }  // namespace hwymp

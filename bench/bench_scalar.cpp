@@ -74,6 +74,12 @@ struct HwyEngine {
   }
   static void Add(Value& r, const Value& a, const Value& b) { r = a + b; }
   static void Mul(Value& r, const Value& a, const Value& b) { r = a * b; }
+  static void Div(Value& r, const Value& a, const Value& b) { r = a / b; }
+  static void Sqrt(Value& r, const Value& a) { r = sqrt(a); }
+  static constexpr bool kHasFma = true;
+  static void Fma(Value& r, const Value& a, const Value& b, const Value& c) {
+    r = fma(a, b, c);
+  }
   static std::uint64_t Fingerprint(const Value& x) { return x.raw_limbs()[0]; }
 };
 
@@ -107,6 +113,16 @@ struct MpfrEngine {
   static void Mul(Value& r, const Value& a, const Value& b) {
     Finish(r, mpfr_mul(r.x, a.x, b.x, MPFR_RNDN));
   }
+  static void Div(Value& r, const Value& a, const Value& b) {
+    Finish(r, mpfr_div(r.x, a.x, b.x, MPFR_RNDN));
+  }
+  static void Sqrt(Value& r, const Value& a) {
+    Finish(r, mpfr_sqrt(r.x, a.x, MPFR_RNDN));
+  }
+  static constexpr bool kHasFma = true;
+  static void Fma(Value& r, const Value& a, const Value& b, const Value& c) {
+    Finish(r, mpfr_fma(r.x, a.x, b.x, c.x, MPFR_RNDN));
+  }
   static std::uint64_t Fingerprint(const Value& v) {
     return static_cast<std::uint64_t>(mpfr_get_exp(v.x));
   }
@@ -130,6 +146,11 @@ struct BoostEngine {
   }
   static void Add(Value& r, const Value& a, const Value& b) { r = a + b; }
   static void Mul(Value& r, const Value& a, const Value& b) { r = a * b; }
+  static void Div(Value& r, const Value& a, const Value& b) { r = a / b; }
+  static void Sqrt(Value& r, const Value& a) { r = sqrt(a); }
+  // Boost has no correctly rounded fused multiply-add for this type.
+  static constexpr bool kHasFma = false;
+  static void Fma(Value&, const Value&, const Value&, const Value&) {}
   static std::uint64_t Fingerprint(const Value& x) {
     return static_cast<std::uint64_t>(x.backend().exponent());
   }
@@ -164,6 +185,9 @@ template <class Engine>
 struct Times {
   double add;
   double mul;
+  double div;
+  double sqrt;
+  double fma;
   double dot;
 };
 
@@ -172,12 +196,19 @@ Times<Engine> Measure(int precision) {
   using Value = typename Engine::Value;
   const std::vector<Sample> sample_a = MakeSamples(precision, 1);
   const std::vector<Sample> sample_b = MakeSamples(precision, 2);
+  const std::vector<Sample> sample_c = MakeSamples(precision, 3);
   auto a = std::make_unique<Value[]>(kCount);
   auto b = std::make_unique<Value[]>(kCount);
+  auto c = std::make_unique<Value[]>(kCount);
+  auto positive = std::make_unique<Value[]>(kCount);
   auto r = std::make_unique<Value[]>(kCount);
   for (int i = 0; i < kCount; ++i) {
     Engine::Load(a[i], sample_a[i]);
     Engine::Load(b[i], sample_b[i]);
+    Engine::Load(c[i], sample_c[i]);
+    Sample unsigned_sample = sample_a[i];
+    unsigned_sample.negative = false;
+    Engine::Load(positive[i], unsigned_sample);
     Engine::Load(r[i], sample_a[i]);
   }
   Value sum;
@@ -199,6 +230,27 @@ Times<Engine> Measure(int precision) {
         sink = Engine::Fingerprint(r[kCount / 2]);
       },
       kCount);
+  times.div = BestNanoseconds(
+      [&] {
+        for (int i = 0; i < kCount; ++i) Engine::Div(r[i], a[i], b[i]);
+        sink = Engine::Fingerprint(r[kCount / 2]);
+      },
+      kCount);
+  times.sqrt = BestNanoseconds(
+      [&] {
+        for (int i = 0; i < kCount; ++i) Engine::Sqrt(r[i], positive[i]);
+        sink = Engine::Fingerprint(r[kCount / 2]);
+      },
+      kCount);
+  times.fma = -1;
+  if constexpr (Engine::kHasFma) {
+    times.fma = BestNanoseconds(
+        [&] {
+          for (int i = 0; i < kCount; ++i) Engine::Fma(r[i], a[i], b[i], c[i]);
+          sink = Engine::Fingerprint(r[kCount / 2]);
+        },
+        kCount);
+  }
   // A dot product over pairs, restarted so that the sum stays in range. Counted
   // per multiply-add step.
   times.dot = BestNanoseconds(
@@ -218,8 +270,8 @@ Times<Engine> Measure(int precision) {
 template <class Engine>
 void Report(const char* format, int precision) {
   const Times<Engine> t = Measure<Engine>(precision);
-  std::printf("%-12s %-11s %9.2f %9.2f %9.2f\n", format, Engine::Name(), t.add,
-              t.mul, t.dot);
+  std::printf("%-12s %-11s %9.2f %9.2f %9.2f %9.2f %9.2f %9.2f\n", format,
+              Engine::Name(), t.add, t.mul, t.div, t.sqrt, t.fma, t.dot);
   std::fflush(stdout);
 }
 
@@ -249,8 +301,8 @@ int main() {
 #endif
   std::printf("GMP %s, MPFR %s. Nanoseconds per operation; lower is better.\n",
               gmp_version, mpfr_get_version());
-  std::printf("%-12s %-11s %9s %9s %9s\n", "format", "library", "add", "mul",
-              "dot step");
+  std::printf("%-12s %-11s %9s %9s %9s %9s %9s %9s\n", "format", "library",
+              "add", "mul", "div", "sqrt", "fma", "dot step");
   ReportFormat<113, 15>("binary128");
   ReportFormat<128, 15>("full 128");
   ReportFormat<237, 19>("binary256");

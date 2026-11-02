@@ -27,7 +27,8 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
 2. Benchmark gate: done, see [BENCHMARKS.md](BENCHMARKS.md). Scalar beats MPFR
    everywhere with Clang. AVX2 batch failed its 1.2x target. MSVC speed is open.
 3. Division, square root, FMA, remainder, roundToIntegral, min/max, nextUp,
-   scalbn, logb.
+   scalbn, logb: done. Division and square root are 1.4x to 3.5x faster than
+   MPFR. FMA is untuned and level with MPFR at binary512.
 4. Correctly rounded conversions: float, double, integers, between formats, and
    strings in both directions.
 5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests.

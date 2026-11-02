@@ -9,8 +9,11 @@
 #include <gtest/gtest.h>
 
 #include <compare>
+#include <cstddef>
+#include <limits>
 #include <tuple>
 #include <type_traits>
+#include <vector>
 
 namespace hwymp {
 namespace {
@@ -265,6 +268,222 @@ TEST(Float, ExactSubnormalResultRaisesNoUnderflow) {
   Context context;
   ExpectBits(mul(two_min, half, context), 0, 1);
   EXPECT_EQ(context.flags, 0u);
+}
+
+using Small = Float<4, 3>;
+
+// Every non-NaN value of Small in increasing order, with -0 before +0.
+std::vector<Small> SortedValues() {
+  std::vector<Small> positive;
+  const limb_t count = limb_t{1} << 6;  // Every encoding with the sign clear.
+  for (limb_t bits = 0; bits < count; ++bits) {
+    const Small x = Small::from_bits({bits});
+    if (!x.is_nan()) positive.push_back(x);
+  }
+  std::vector<Small> sorted;
+  for (std::size_t i = positive.size(); i-- > 0;) {
+    sorted.push_back(-positive[i]);
+  }
+  sorted.insert(sorted.end(), positive.begin(), positive.end());
+  return sorted;
+}
+
+bool SameBits(const Small& a, const Small& b) { return a.to_bits() == b.to_bits(); }
+
+TEST(FloatNeighbours, StepsThroughEveryValueInOrder) {
+  const std::vector<Small> sorted = SortedValues();
+  ASSERT_GT(sorted.size(), 100u);
+  for (std::size_t i = 0; i + 1 < sorted.size(); ++i) {
+    const Small& x = sorted[i];
+    const Small& next = sorted[i + 1];
+    if (x.is_zero() && next.is_zero()) continue;
+    if (x.is_zero()) {
+      EXPECT_TRUE(SameBits(next_up(x), Small::MinSubnormal()));
+      continue;
+    }
+    if (next.is_zero()) {
+      EXPECT_TRUE(SameBits(next_up(x), next)) << i;
+      continue;
+    }
+    EXPECT_TRUE(SameBits(next_up(x), next)) << i;
+    EXPECT_TRUE(SameBits(next_down(next), x)) << i;
+  }
+  EXPECT_TRUE(SameBits(next_up(Small::Infinity()), Small::Infinity()));
+  EXPECT_TRUE(SameBits(next_down(Small::Infinity(true)), Small::Infinity(true)));
+  EXPECT_TRUE(SameBits(next_down(Small::Zero(true)), Small::MinSubnormal(true)));
+  EXPECT_TRUE(SameBits(next_down(Small::Zero()), Small::MinSubnormal(true)));
+  EXPECT_TRUE(SameBits(next_up(Small::MaxFinite()), Small::Infinity()));
+  EXPECT_TRUE(SameBits(next_up(Small::MinSubnormal(true)), Small::Zero(true)));
+}
+
+TEST(FloatNeighbours, RaiseInvalidOnlyForSignalingNaN) {
+  Context context;
+  EXPECT_TRUE(next_up(Small::QuietNaN(), context).is_nan());
+  EXPECT_EQ(context.flags, 0u);
+  const Small result = next_down(Small::SignalingNaN(), context);
+  EXPECT_TRUE(result.is_nan());
+  EXPECT_FALSE(result.is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  next_up(Small::MaxFinite(), context = Context{});
+  EXPECT_EQ(context.flags, 0u);
+}
+
+TEST(FloatMinMax, FollowsTheOrderOfValues) {
+  const std::vector<Small> sorted = SortedValues();
+  for (std::size_t i = 0; i < sorted.size(); ++i) {
+    for (std::size_t j = 0; j < sorted.size(); ++j) {
+      const Small& low = sorted[i < j ? i : j];
+      const Small& high = sorted[i < j ? j : i];
+      EXPECT_TRUE(SameBits(minimum(sorted[i], sorted[j]), low));
+      EXPECT_TRUE(SameBits(maximum(sorted[i], sorted[j]), high));
+      EXPECT_TRUE(SameBits(minimum_number(sorted[i], sorted[j]), low));
+      EXPECT_TRUE(SameBits(maximum_number(sorted[i], sorted[j]), high));
+    }
+  }
+}
+
+TEST(FloatMinMax, HandlesNaN) {
+  const binary128 one = binary128::MinNormal();
+  const binary128 quiet = binary128::QuietNaN();
+  const binary128 signaling = binary128::SignalingNaN();
+
+  Context context;
+  EXPECT_TRUE(minimum(one, quiet, context).is_nan());
+  EXPECT_TRUE(maximum(quiet, one, context).is_nan());
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_FALSE(minimum(one, signaling, context).is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+
+  context = Context{};
+  EXPECT_TRUE(minimum_number(one, quiet, context) == one);
+  EXPECT_TRUE(maximum_number(quiet, one, context) == one);
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(minimum_number(signaling, one, context) == one);
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+
+  context = Context{};
+  EXPECT_TRUE(maximum_number(quiet, quiet, context).is_nan());
+  EXPECT_EQ(context.flags, 0u);
+  const binary128 both = maximum_number(signaling, quiet, context);
+  EXPECT_TRUE(both.is_nan());
+  EXPECT_FALSE(both.is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+}
+
+TEST(FloatExponent, Ilogb) {
+  EXPECT_EQ(ilogb(binary128::MinNormal()), binary128::kEmin);
+  EXPECT_EQ(ilogb(binary128::MaxFinite()), binary128::kEmax);
+  EXPECT_EQ(ilogb(binary128::MinSubnormal()), binary128::kEmin - 112);
+
+  Context context;
+  EXPECT_EQ(ilogb(binary128::Zero(), context), binary128::kIlogbZero);
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{};
+  EXPECT_EQ(ilogb(binary128::Infinity(true), context),
+            binary128::kIlogbInfinity);
+  EXPECT_EQ(ilogb(binary128::QuietNaN(), context), binary128::kIlogbNaN);
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{};
+  EXPECT_EQ(ilogb(binary128::MaxFinite(), context), binary128::kEmax);
+  EXPECT_EQ(context.flags, 0u);
+}
+
+TEST(FloatExponent, Logb) {
+  const binary128 min_normal = binary128::MinNormal();
+  const binary128 one = scalbn(min_normal, -binary128::kEmin);
+  EXPECT_TRUE(logb(one).is_zero());
+  EXPECT_FALSE(logb(one).signbit());
+  EXPECT_TRUE(logb(scalbn(one, 1)) == one);
+  EXPECT_TRUE(logb(scalbn(one, -1)) == -one);
+  const binary128 two = scalbn(one, 1);
+  const binary128 emin = -(scalbn(one, 14) - two);  // kEmin is -16382.
+  EXPECT_TRUE(logb(min_normal) == emin);
+
+  Context context{Rounding::kUp};
+  const binary128 at_zero = logb(binary128::Zero(true), context);
+  EXPECT_TRUE(at_zero.is_inf());
+  EXPECT_TRUE(at_zero.signbit());
+  EXPECT_EQ(context.flags, unsigned{kFlagDivByZero});
+
+  context = Context{};
+  EXPECT_TRUE(logb(binary128::Infinity(true), context) ==
+              binary128::Infinity());
+  EXPECT_TRUE(logb(binary128::QuietNaN(), context).is_nan());
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_FALSE(logb(binary128::SignalingNaN(), context).is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+}
+
+TEST(FloatScalbn, ExtremeCountsSaturate) {
+  const int huge = std::numeric_limits<int>::max();
+  const binary512 one = scalbn(binary512::MinNormal(), -binary512::kEmin);
+  EXPECT_TRUE(scalbn(one, huge).is_inf());
+  EXPECT_TRUE(scalbn(one, -huge).is_zero());
+  EXPECT_TRUE(scalbn(binary512::MinSubnormal(), huge).is_inf());
+  EXPECT_TRUE(scalbn(binary512::MaxFinite(), std::numeric_limits<int>::min())
+                  .is_zero());
+  EXPECT_TRUE(scalbn(one, 0) == one);
+}
+
+TEST(FloatRounding, CStyleFunctions) {
+  const binary256 one = scalbn(binary256::MinNormal(), -binary256::kEmin);
+  const binary256 half = scalbn(one, -1);
+  const binary256 two = one + one;
+  const binary256 x = one + half;  // 1.5
+
+  EXPECT_TRUE(floor(x) == one);
+  EXPECT_TRUE(ceil(x) == two);
+  EXPECT_TRUE(trunc(x) == one);
+  EXPECT_TRUE(round(x) == two);
+  EXPECT_TRUE(floor(-x) == -two);
+  EXPECT_TRUE(ceil(-x) == -one);
+  EXPECT_TRUE(trunc(-x) == -one);
+  EXPECT_TRUE(round(-x) == -two);
+
+  EXPECT_TRUE(round(half) == one);
+  EXPECT_TRUE(trunc(-half).is_zero());
+  EXPECT_TRUE(trunc(-half).signbit());
+  EXPECT_TRUE(ceil(-half).signbit());
+  EXPECT_TRUE(floor(half).is_zero());
+  EXPECT_TRUE(floor(binary256::Infinity(true)).is_inf());
+}
+
+// The expected limbs come from an exact integer square root. MPFR 4.2.2 returns
+// wrong values for this input when rounding down or up, and a wrong ternary value
+// when rounding to nearest, which is how it was found.
+TEST(Sqrt, Mpfr422Regression) {
+  const binary512::Limbs x = {0,
+                              0,
+                              2,
+                              ~limb_t{0},
+                              ~limb_t{0},
+                              1,
+                              0,
+                              limb_t{1} << 63};
+  const binary512::Limbs expected = {0,
+                                     0,
+                                     limb_t{1} << 63,
+                                     ~limb_t{0},
+                                     ~limb_t{0},
+                                     0,
+                                     0,
+                                     limb_t{1} << 63};
+  binary512::Limbs above = expected;
+  above[0] = limb_t{1} << 23;
+  const binary512 input = binary512::FromRaw(false, -2, x);
+
+  Context down{Rounding::kTowardZero};
+  const binary512 root = sqrt(input, down);
+  EXPECT_EQ(root.raw_exponent(), -1);
+  EXPECT_EQ(root.raw_limbs(), expected);
+  EXPECT_EQ(down.flags, unsigned{kFlagInexact});
+
+  Context up{Rounding::kUp};
+  EXPECT_EQ(sqrt(input, up).raw_limbs(), above);
+  EXPECT_EQ(up.flags, unsigned{kFlagInexact});
+
+  // The root is just above the lower neighbour, so nearest goes down.
+  EXPECT_EQ(sqrt(input).raw_limbs(), expected);
 }
 
 }  // namespace

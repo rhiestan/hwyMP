@@ -1,9 +1,12 @@
 # Benchmarks
 
-Measured on 2026-11-01 on an AMD Ryzen 9 5950X (Zen 3, AVX2, no AVX-512) under
+Scalar results were measured on 2026-11-02, and the rest on 2026-11-01, on an
+AMD Ryzen 9 5950X (Zen 3, AVX2, no AVX-512) under
 Windows 11. One pinned thread at high priority, best of 25 runs over 1024 random
 operand pairs with exponents within ±8 and random signs. Nanoseconds per
 operation; lower is better. "dot step" is one operation of a multiply-add loop.
+Square roots take positive operands. Boost has no correctly rounded fma for this
+type, so it has no fma column.
 
 - hwyMP and Boost 1.92: Clang 22.1.2, `-O3 -march=native`.
 - GMP 6.3.0: Zen 3 assembly and tuning (`cmake/triplets/...-zen3.cmake`).
@@ -16,39 +19,44 @@ the steps that IEEE-identical results need, matching what hwyMP delivers.
 
 ## Scalar
 
-| Format | Library | add | mul | dot step |
-|---|---|---:|---:|---:|
-| binary128 | hwyMP | 8.12 | 7.55 | 10.62 |
-| | MPFR | 11.83 | 15.14 | 13.39 |
-| | MPFR IEEE | 16.74 | 20.13 | 18.93 |
-| | Boost | 36.49 | 50.15 | 42.24 |
-| binary256 | hwyMP | 12.11 | 14.20 | 15.53 |
-| | MPFR | 19.56 | 36.06 | 25.69 |
-| | MPFR IEEE | 24.46 | 41.27 | 30.82 |
-| | Boost | 46.48 | 74.39 | 55.52 |
-| binary512 | hwyMP | 16.41 | 47.92 | 32.19 |
-| | MPFR | 21.92 | 57.37 | 34.20 |
-| | MPFR IEEE | 27.45 | 62.62 | 39.41 |
-| | Boost | 62.82 | 167.40 | 96.53 |
+| Format | Library | add | mul | div | sqrt | fma | dot step |
+|---|---|---:|---:|---:|---:|---:|---:|
+| binary128 | hwyMP | 7.93 | 7.38 | 14.84 | 19.91 | 23.42 | 10.50 |
+| | MPFR | 11.97 | 14.82 | 26.90 | 28.50 | 41.81 | 13.20 |
+| | MPFR IEEE | 16.88 | 20.53 | 31.69 | 32.33 | 48.23 | 19.35 |
+| | Boost | 35.86 | 47.99 | 178.31 | 282.44 | | 41.56 |
+| binary256 | hwyMP | 12.06 | 14.19 | 29.72 | 62.46 | 36.48 | 15.18 |
+| | MPFR | 19.08 | 35.63 | 104.53 | 116.61 | 54.90 | 25.63 |
+| | MPFR IEEE | 24.90 | 41.51 | 111.40 | 122.96 | 60.84 | 30.67 |
+| | Boost | 47.11 | 72.90 | 416.67 | 536.17 | | 54.30 |
+| binary512 | hwyMP | 15.74 | 51.80 | 81.12 | 140.59 | 78.96 | 32.02 |
+| | MPFR | 21.41 | 56.05 | 157.43 | 251.44 | 77.15 | 33.71 |
+| | MPFR IEEE | 27.01 | 60.80 | 166.07 | 258.67 | 83.38 | 38.58 |
+| | Boost | 61.77 | 166.68 | 1069.02 | 1086.34 | | 94.27 |
+
+hwyMP's fma is a straightforward double-width addition and has not been tuned.
+At binary512 it is level with MPFR rather than ahead.
 
 ### Full-limb precision
 
-Full-limb formats cost hwyMP nothing measurable: 128, 256 and 512 bits run at
-the same speed as binary128, binary256 and binary512, within noise.
+Full-limb formats cost hwyMP little: 128, 256 and 512 bits run at the same speed
+as binary128, binary256 and binary512, except for division at 128 and 256 bits,
+which needs one more quotient limb.
 
-| Format | Library | add | mul | dot step |
-|---|---|---:|---:|---:|
-| full 128 | hwyMP | 8.21 | 7.56 | 10.42 |
-| | MPFR | 11.12 | 27.98 | 17.30 |
-| full 256 | hwyMP | 11.95 | 14.46 | 15.28 |
-| | MPFR | 19.40 | 35.99 | 25.71 |
-| full 512 | hwyMP | 15.64 | 47.52 | 32.02 |
-| | MPFR | 21.43 | 56.43 | 34.01 |
+| Format | Library | add | mul | div | sqrt | fma | dot step |
+|---|---|---:|---:|---:|---:|---:|---:|
+| full 128 | hwyMP | 8.02 | 7.42 | 17.55 | 19.71 | 24.03 | 10.25 |
+| | MPFR | 11.06 | 27.09 | 42.47 | 113.70 | 42.79 | 17.41 |
+| full 256 | hwyMP | 11.87 | 14.22 | 34.97 | 63.46 | 36.14 | 14.96 |
+| | MPFR | 18.88 | 35.68 | 103.95 | 169.48 | 54.97 | 25.48 |
+| full 512 | hwyMP | 16.34 | 48.62 | 84.12 | 138.23 | 79.02 | 32.27 |
+| | MPFR | 21.58 | 56.52 | 157.96 | 268.47 | 79.67 | 33.75 |
 
 ### MSVC
 
 MSVC 19.44 builds of hwyMP are much slower at small sizes, and at binary128 they
-are slower than MPFR. This is an open issue.
+are slower than MPFR. This is an open issue. These figures predate division and
+square root.
 
 | Format | add | mul | dot step |
 |---|---:|---:|---:|
