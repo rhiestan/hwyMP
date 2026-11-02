@@ -4,6 +4,7 @@ project(hwyMP VERSION 0.1.0 LANGUAGES C CXX)
 option(HWYMP_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(HWYMP_USE_LOCAL_DEPS
        "Use sibling highway/ and eigen/ checkouts when they exist" ON)
+option(HWYMP_BUILD_BENCHMARKS "Build benchmarks; needs GMP, MPFR and Boost" OFF)
 option(HWYMP_ENABLE_ORACLE
        "Build tests that need GMP and MPFR; fail if they are missing" OFF)
 
@@ -44,4 +45,8 @@ target_link_libraries(hwymp INTERFACE hwy)
 if(HWYMP_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(HWYMP_BUILD_BENCHMARKS)
+  add_subdirectory(bench)
 endif()

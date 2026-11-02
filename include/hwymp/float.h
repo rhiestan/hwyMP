@@ -97,15 +97,15 @@ HWYMP_ALWAYS_INLINE constexpr bool ShouldRoundUp(Rounding mode, bool negative,
                                                  bool sticky) noexcept {
   switch (mode) {
     case Rounding::kNearestEven:
-      return round_bit && (sticky || is_odd);
+      return round_bit & (sticky | is_odd);
     case Rounding::kNearestAway:
       return round_bit;
     case Rounding::kTowardZero:
       return false;
     case Rounding::kUp:
-      return !negative && (round_bit || sticky);
+      return !negative & (round_bit | sticky);
     case Rounding::kDown:
-      return negative && (round_bit || sticky);
+      return negative & (round_bit | sticky);
   }
   return false;
 }
@@ -514,12 +514,13 @@ class Float {
       sticky = (value.rest << 1) != 0;
     }
     if (round_bit || sticky) env.raise(kFlagInexact);
-    if (!detail::ShouldRoundUp(env.rounding(), negative, is_odd, round_bit,
-                               sticky)) {
-      return false;
-    }
+    // Always adding the increment avoids a branch on what is a coin flip.
+    const limb_t increment = detail::ShouldRoundUp(env.rounding(), negative,
+                                                   is_odd, round_bit, sticky)
+                                 ? limb_t{1} << kSpareBits
+                                 : 0;
     carry_t carry = 0;
-    value.limbs[0] = adc(value.limbs[0], limb_t{1} << kSpareBits, carry);
+    value.limbs[0] = adc(value.limbs[0], increment, carry);
     for (std::size_t i = 1; i < kLimbs; ++i) {
       value.limbs[i] = adc(value.limbs[i], 0, carry);
     }
@@ -653,6 +654,19 @@ class Float {
     const int words = distance / kLimbBits;
     const int bits = distance % kLimbBits;
 
+    if (words == 0) {
+      // By far the most common case, with no limbs to move.
+      const int complement = kLimbBits - 1 - bits;
+      Extended result;
+      result.rest = (small[0] << 1) << complement;
+      for (std::size_t i = 0; i + 1 < kLimbs; ++i) {
+        result.limbs[i] =
+            (small[i] >> bits) | ((small[i + 1] << 1) << complement);
+      }
+      result.limbs[kLimbs - 1] = small[kLimbs - 1] >> bits;
+      return result;
+    }
+
     // Element 0 is `rest`; elements 1 to L are the shifted limbs.
     std::array<limb_t, kLimbs + 1> wide{};
     for (int i = 0; i + words <= kWords; ++i) {
@@ -664,13 +678,17 @@ class Float {
     for (int i = 0; i + 1 < words; ++i) {
       lost |= small[static_cast<std::size_t>(i)];
     }
-    if (bits != 0) {
-      lost |= wide[0] << (kLimbBits - bits);
-      detail::ShiftRight(wide, bits);
-    }
+    // Shifting in two steps keeps a bit count of zero well defined, so no
+    // branch is needed for it.
+    const int complement = kLimbBits - 1 - bits;
+    lost |= (wide[0] << 1) << complement;
     Extended result;
-    for (std::size_t i = 0; i < kLimbs; ++i) result.limbs[i] = wide[i + 1];
-    result.rest = wide[0] | (lost != 0 ? 1 : 0);
+    result.rest = ((wide[0] >> bits) | ((wide[1] << 1) << complement)) |
+                  (lost != 0 ? 1 : 0);
+    for (std::size_t i = 0; i < kLimbs; ++i) {
+      const limb_t above = i + 1 < kLimbs ? wide[i + 2] : 0;
+      result.limbs[i] = (wide[i + 1] >> bits) | ((above << 1) << complement);
+    }
     return result;
   }
 
@@ -719,13 +737,18 @@ class Float {
       for (std::size_t i = 0; i < kLimbs; ++i) {
         sum.limbs[i] = adc((*big)[i], sum.limbs[i], carry);
       }
-      if (carry != 0) {
-        sum.rest = (sum.limbs[0] << (kLimbBits - 1)) | (sum.rest >> 1) |
-                   (sum.rest & 1);
-        detail::ShiftRight(sum.limbs, 1);
-        sum.limbs[kLimbs - 1] |= kTopBit;
-        ++exponent;
+      // A carry happens about half the time, so shift by it without a branch.
+      const int shift = carry;
+      const int complement = kLimbBits - 1 - shift;
+      sum.rest = ((sum.limbs[0] << 1) << complement) | (sum.rest >> shift) |
+                 (sum.rest & 1);
+      for (std::size_t i = 0; i + 1 < kLimbs; ++i) {
+        sum.limbs[i] = (sum.limbs[i] >> shift) |
+                       ((sum.limbs[i + 1] << 1) << complement);
       }
+      sum.limbs[kLimbs - 1] = (sum.limbs[kLimbs - 1] >> shift) |
+                              ((limb_t{carry} << 1) << complement);
+      exponent += shift;
       return Finish(negative, exponent, sum, env);
     }
 
@@ -746,10 +769,30 @@ class Float {
     for (std::size_t i = 0; i < kLimbs; ++i) {
       difference.limbs[i] = sbb((*big)[i], difference.limbs[i], borrow);
     }
-    if ((difference.limbs[kLimbs - 1] & kTopBit) == 0) {
+    if (difference.limbs[kLimbs - 1] >> (kLimbBits - 2) == 0) [[unlikely]] {
       exponent -= NormalizeDifference(difference);
+    } else {
+      // At most one bit of cancellation, which is a coin flip.
+      const int shift = static_cast<int>(difference.limbs[kLimbs - 1] >>
+                                         (kLimbBits - 1)) ^
+                        1;
+      ShiftLeftByBit(difference, shift);
+      exponent -= shift;
     }
     return Finish(negative, exponent, difference, env);
+  }
+
+  // Shifts left by `shift`, which is 0 or 1, without branching on it.
+  HWYMP_ALWAYS_INLINE static void ShiftLeftByBit(Extended& value,
+                                                 int shift) noexcept {
+    const int complement = kLimbBits - 1 - shift;
+    for (std::size_t i = kLimbs - 1; i > 0; --i) {
+      value.limbs[i] = (value.limbs[i] << shift) |
+                       ((value.limbs[i - 1] >> 1) >> complement);
+    }
+    value.limbs[0] =
+        (value.limbs[0] << shift) | ((value.rest >> 1) >> complement);
+    value.rest <<= shift;
   }
 
   // Shifts a nonzero difference left until its top bit is set, returning the
@@ -795,23 +838,8 @@ class Float {
       return MulSpecial(a, b, negative, env);
     }
 
-    std::array<limb_t, 2 * kLimbs> product{};
-    for (std::size_t i = 0; i < kLimbs; ++i) {
-      limb_t previous_high = 0;
-      for (std::size_t j = 0; j < kLimbs; ++j) {
-        limb_t high;
-        limb_t low = mul_wide(a.limbs_[j], b.limbs_[i], high);
-        carry_t carry = 0;
-        low = adc(low, product[i + j], carry);
-        high = adc(high, 0, carry);
-        carry = 0;
-        low = adc(low, previous_high, carry);
-        high = adc(high, 0, carry);
-        product[i + j] = low;
-        previous_high = high;
-      }
-      product[i + kLimbs] = previous_high;
-    }
+    const std::array<limb_t, 2 * kLimbs> product =
+        MultiplySignificands(a.limbs_, b.limbs_);
 
     Extended value;
     for (std::size_t i = 0; i < kLimbs; ++i) {
@@ -821,16 +849,64 @@ class Float {
     limb_t lost = 0;
     for (std::size_t i = 0; i + 1 < kLimbs; ++i) lost |= product[i];
 
-    // Both significands are in [1, 2), so the product is in [1, 4).
-    std::int32_t exponent = a.exponent_ + b.exponent_ + 1;
-    if ((value.limbs[kLimbs - 1] & kTopBit) == 0) {
-      --exponent;
-      detail::ShiftLeft(value.limbs, 1);
-      value.limbs[0] |= value.rest >> (kLimbBits - 1);
-      value.rest <<= 1;
-    }
+    // Both significands are in [1, 2), so the product is in [1, 4). Either
+    // case is equally likely, so this avoids a branch.
+    const int shift =
+        static_cast<int>(value.limbs[kLimbs - 1] >> (kLimbBits - 1)) ^ 1;
+    ShiftLeftByBit(value, shift);
     value.rest |= lost != 0 ? 1 : 0;
+    const std::int32_t exponent = a.exponent_ + b.exponent_ + 1 - shift;
     return Finish(negative, exponent, value, env);
+  }
+
+  HWYMP_ALWAYS_INLINE static std::array<limb_t, 2 * kLimbs>
+  MultiplySignificands(const Limbs& a, const Limbs& b) noexcept {
+    std::array<limb_t, 2 * kLimbs> product;
+    if constexpr (kLimbs > 4) {
+      // Row by row, with one unbroken carry chain for each of the low and high
+      // halves. Compilers unroll these rectangular loops at this size.
+      product.fill(0);
+      for (std::size_t i = 0; i < kLimbs; ++i) {
+        Limbs lows;
+        Limbs highs;
+        for (std::size_t j = 0; j < kLimbs; ++j) {
+          lows[j] = mul_wide(a[j], b[i], highs[j]);
+        }
+        carry_t carry = 0;
+        for (std::size_t j = 0; j < kLimbs; ++j) {
+          product[i + j] = adc(product[i + j], lows[j], carry);
+        }
+        product[i + kLimbs] = carry;
+        carry = 0;
+        for (std::size_t j = 0; j < kLimbs; ++j) {
+          product[i + j + 1] = adc(product[i + j + 1], highs[j], carry);
+        }
+      }
+      return product;
+    }
+    // Product scanning: each column is summed into a three-limb accumulator,
+    // which needs fewer carry operations than adding row by row.
+    limb_t column_low = 0;
+    limb_t column_middle = 0;
+    limb_t column_high = 0;
+    for (std::size_t k = 0; k + 1 < 2 * kLimbs; ++k) {
+      const std::size_t first = k < kLimbs ? 0 : k - kLimbs + 1;
+      const std::size_t last = k < kLimbs ? k : kLimbs - 1;
+      for (std::size_t i = first; i <= last; ++i) {
+        limb_t high;
+        const limb_t low = mul_wide(a[i], b[k - i], high);
+        carry_t carry = 0;
+        column_low = adc(column_low, low, carry);
+        column_middle = adc(column_middle, high, carry);
+        column_high += carry;
+      }
+      product[k] = column_low;
+      column_low = column_middle;
+      column_middle = column_high;
+      column_high = 0;
+    }
+    product[2 * kLimbs - 1] = column_low;
+    return product;
   }
 
   // --- Comparison ---

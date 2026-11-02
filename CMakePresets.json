@@ -1,19 +1,29 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
       "name": "windows-base",
       "hidden": true,
       "inherits": "base",
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "HWYMP_ENABLE_ORACLE": "ON",
@@ -26,29 +36,77 @@
       "name": "windows-msvc",
       "displayName": "Windows, MSVC",
       "inherits": "windows-base",
-      "cacheVariables": { "CMAKE_C_COMPILER": "cl", "CMAKE_CXX_COMPILER": "cl" }
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
     },
     {
       "name": "windows-clang",
       "displayName": "Windows, Clang",
       "inherits": "windows-base",
-      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++" }
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "windows-bench",
+      "displayName": "Windows, Clang benchmarks with Zen 3 GMP",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "HWYMP_BUILD_TESTS": "OFF",
+        "HWYMP_ENABLE_ORACLE": "OFF",
+        "HWYMP_BUILD_BENCHMARKS": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md-v143-zen3",
+        "VCPKG_HOST_TRIPLET": "x64-windows-static-md-v143-zen3",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed_zen3"
+      }
+    },
+    {
+      "name": "windows-bench-msvc",
+      "displayName": "Windows, MSVC benchmarks with Zen 3 GMP",
+      "inherits": "windows-bench",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "windows-msvc", "configurePreset": "windows-msvc" },
-    { "name": "windows-clang", "configurePreset": "windows-clang" }
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "windows-clang",
+      "configurePreset": "windows-clang"
+    },
+    {
+      "name": "windows-bench",
+      "configurePreset": "windows-bench"
+    },
+    {
+      "name": "windows-bench-msvc",
+      "configurePreset": "windows-bench-msvc"
+    }
   ],
   "testPresets": [
     {
       "name": "windows-msvc",
       "configurePreset": "windows-msvc",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "windows-clang",
       "configurePreset": "windows-clang",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

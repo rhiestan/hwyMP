@@ -24,17 +24,15 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
 0. Infrastructure: CMake, presets, vcpkg oracle, limb primitives, GitHub Actions.
 1. Scalar core: add, subtract, multiply, compare, classify, round, in all modes.
    Differential tests against MPFR, and exhaustive tests on tiny formats.
-2. Benchmark gate: scalar and SoA Highway add/mul at 256 bits against MPFR and
-   Boost. Scalar target: at least MPFR's speed and 5x Boost's. Batch work stays
-   AVX-512-only if AVX2 throughput is below about 1.2x scalar. Full-limb
-   comparison belongs here or in phase 7. Before any MPFR timing: vcpkg builds
-   GMP with generic `k8` tuning and MPFR with MSVC, which understates MPFR.
-   Rebuild both tuned for the CPU, for example with an overlay port.
+2. Benchmark gate: done, see [BENCHMARKS.md](BENCHMARKS.md). Scalar beats MPFR
+   everywhere with Clang. AVX2 batch failed its 1.2x target. MSVC speed is open.
 3. Division, square root, FMA, remainder, roundToIntegral, min/max, nextUp,
    scalbn, logb.
 4. Correctly rounded conversions: float, double, integers, between formats, and
    strings in both directions.
 5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests.
-6. Batch layer: `FloatVec<P, E>`, dispatched kernels, tested through Intel SDE.
+6. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
+   AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through
+   Intel SDE.
 7. Hardening and release: long differential runs, TestFloat, sanitizers,
    fuzzing, and a benchmark report.
