@@ -1,4 +1,4 @@
-# hwyMP plan
+# mpfix plan
 
 Fixed-size IEEE 754 floating-point types for C++, aiming to beat Boost and match
 or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.

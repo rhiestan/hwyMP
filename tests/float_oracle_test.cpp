@@ -1,8 +1,8 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Differential tests of Float against MPFR, covering results and flags in all
-// five rounding modes. Set HWYMP_TEST_SCALE to multiply the iteration counts
+// five rounding modes. Set MPFIX_TEST_SCALE to multiply the iteration counts
 // and, when it is at least 10, to enable the larger exhaustive formats.
 
 #include <cstdint>
@@ -11,7 +11,7 @@
 
 #include "oracle.h"
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 using namespace test;  // NOLINT
@@ -379,7 +379,7 @@ TEST(FloatOracle, ExhaustiveFmaP3E2) { CheckFmaExhaustively<Float<3, 2>>(); }
 TEST(FloatOracle, ExhaustiveFmaP3E3) { CheckFmaExhaustively<Float<3, 3>>(); }
 
 TEST(FloatOracle, ExhaustiveLargerFormats) {
-  if (TestScale() < 10) GTEST_SKIP() << "Needs HWYMP_TEST_SCALE >= 10";
+  if (TestScale() < 10) GTEST_SKIP() << "Needs MPFIX_TEST_SCALE >= 10";
   CheckExhaustively<Float<6, 3>>();
   CheckExhaustively<Float<5, 4>>();
   CheckFmaExhaustively<Float<4, 3>>();
@@ -620,4 +620,4 @@ TEST(FloatOracle, RandomLimbBoundaries) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

@@ -1,9 +1,9 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Differential tests of the conversions against MPFR: between formats, from
 // and to integers, and from and to decimal strings, in all five rounding
-// modes and with flags. Set HWYMP_TEST_SCALE to multiply the iteration counts.
+// modes and with flags. Set MPFIX_TEST_SCALE to multiply the iteration counts.
 
 #include <bit>
 #include <cstdint>
@@ -13,10 +13,10 @@
 #include <type_traits>
 #include <vector>
 
-#include "hwymp/charconv.h"
+#include "mpfix/charconv.h"
 #include "oracle.h"
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 using namespace test;  // NOLINT
@@ -845,4 +845,4 @@ TEST(ConvertOracle, HexDigits) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

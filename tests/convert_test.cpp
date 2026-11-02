@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Conversions between formats, built-in floating-point types and integers. The
@@ -13,9 +13,9 @@
 #include <random>
 #include <type_traits>
 
-#include "hwymp/float.h"
+#include "mpfix/float.h"
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 using Double = Float<53, 11>;
@@ -293,4 +293,4 @@ TEST(Convert, LongDouble) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

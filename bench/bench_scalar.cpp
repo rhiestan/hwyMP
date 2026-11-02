@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Single-threaded throughput of scalar operations on identical random inputs.
@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#include "hwymp/float.h"
+#include "mpfix/float.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -65,7 +65,7 @@ std::vector<Sample> MakeSamples(int precision, std::uint64_t seed) {
 template <class F>
 struct HwyEngine {
   using Value = F;
-  static const char* Name() { return "hwyMP"; }
+  static const char* Name() { return "mpfix"; }
   static void Init(Value&) {}
   static void Load(Value& x, const Sample& s) {
     typename F::Limbs limbs;
@@ -279,7 +279,7 @@ template <int P, int E>
 void ReportFormat(const char* format) {
   mpfr_set_emin(mpfr_get_emin_min());
   mpfr_set_emax(mpfr_get_emax_max());
-  Report<HwyEngine<hwymp::Float<P, E>>>(format, P);
+  Report<HwyEngine<mpfix::Float<P, E>>>(format, P);
   Report<MpfrEngine<P, E, false>>(format, P);
   // MPFR's exponent is one larger than IEEE's, and its emin refers to the
   // smallest subnormal.

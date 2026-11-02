@@ -4,27 +4,27 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # so that its own CMake project, with its tests and options, is not configured.
 FetchContent_Declare(eigen
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-  GIT_TAG ${HWYMP_EIGEN_TAG}
+  GIT_TAG ${MPFIX_EIGEN_TAG}
   GIT_SHALLOW TRUE
   SOURCE_SUBDIR do-not-configure)
 
 FetchContent_Declare(googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG ${HWYMP_GOOGLETEST_TAG}
+  GIT_TAG ${MPFIX_GOOGLETEST_TAG}
   GIT_SHALLOW TRUE)
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(eigen googletest)
 
-add_library(hwymp_eigen INTERFACE)
-target_include_directories(hwymp_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
+add_library(mpfix_eigen INTERFACE)
+target_include_directories(mpfix_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
 
 include(GoogleTest)
 
-function(hwymp_add_test name)
+function(mpfix_add_test name)
   add_executable(${name} ${name}.cpp)
-  target_link_libraries(${name} PRIVATE hwymp GTest::gtest_main ${ARGN})
+  target_link_libraries(${name} PRIVATE mpfix GTest::gtest_main ${ARGN})
   if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(${name} PRIVATE /W4 /permissive- /Zc:__cplusplus)
   elseif(MSVC)
@@ -38,27 +38,27 @@ function(hwymp_add_test name)
   gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST)
 endfunction()
 
-hwymp_add_test(limb_ops_test)
-hwymp_add_test(float_test)
-hwymp_add_test(convert_test)
-hwymp_add_test(charconv_test)
-hwymp_add_test(windows_header_test)
-hwymp_add_test(deps_smoke_test hwymp_eigen)
+mpfix_add_test(limb_ops_test)
+mpfix_add_test(float_test)
+mpfix_add_test(convert_test)
+mpfix_add_test(charconv_test)
+mpfix_add_test(windows_header_test)
+mpfix_add_test(deps_smoke_test mpfix_eigen)
 
-if(HWYMP_ENABLE_ORACLE)
-  find_path(HWYMP_GMP_INCLUDE_DIR gmp.h REQUIRED)
-  find_path(HWYMP_MPFR_INCLUDE_DIR mpfr.h REQUIRED)
-  find_library(HWYMP_GMP_LIBRARY NAMES gmp libgmp REQUIRED)
-  find_library(HWYMP_MPFR_LIBRARY NAMES mpfr libmpfr REQUIRED)
+if(MPFIX_ENABLE_ORACLE)
+  find_path(MPFIX_GMP_INCLUDE_DIR gmp.h REQUIRED)
+  find_path(MPFIX_MPFR_INCLUDE_DIR mpfr.h REQUIRED)
+  find_library(MPFIX_GMP_LIBRARY NAMES gmp libgmp REQUIRED)
+  find_library(MPFIX_MPFR_LIBRARY NAMES mpfr libmpfr REQUIRED)
 
-  add_library(hwymp_oracle INTERFACE)
-  target_include_directories(hwymp_oracle SYSTEM INTERFACE
-    "${HWYMP_GMP_INCLUDE_DIR}" "${HWYMP_MPFR_INCLUDE_DIR}")
+  add_library(mpfix_oracle INTERFACE)
+  target_include_directories(mpfix_oracle SYSTEM INTERFACE
+    "${MPFIX_GMP_INCLUDE_DIR}" "${MPFIX_MPFR_INCLUDE_DIR}")
   # MPFR must come first because it depends on GMP.
-  target_link_libraries(hwymp_oracle INTERFACE
-    "${HWYMP_MPFR_LIBRARY}" "${HWYMP_GMP_LIBRARY}")
+  target_link_libraries(mpfix_oracle INTERFACE
+    "${MPFIX_MPFR_LIBRARY}" "${MPFIX_GMP_LIBRARY}")
 
-  hwymp_add_test(oracle_smoke_test hwymp_oracle)
-  hwymp_add_test(float_oracle_test hwymp_oracle)
-  hwymp_add_test(convert_oracle_test hwymp_oracle)
+  mpfix_add_test(oracle_smoke_test mpfix_oracle)
+  mpfix_add_test(float_oracle_test mpfix_oracle)
+  mpfix_add_test(convert_oracle_test mpfix_oracle)
 endif()

@@ -48,7 +48,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=${{ matrix.cc }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
-          -DHWYMP_ENABLE_ORACLE=ON
+          -DMPFIX_ENABLE_ORACLE=ON
 
       - name: Build
         run: cmake --build build

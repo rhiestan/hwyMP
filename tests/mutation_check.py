@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The hwyMP Authors
+# Copyright 2026 The mpfix Authors
 # SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 """Checks that the oracle tests catch deliberately injected bugs.
 
@@ -365,12 +365,12 @@ def run_mutant(mutation, sources, build_flags, compiler, work):
     if sources[header].count(old) != 1:
         return name, "BAD PATTERN"
     directory = work / str(abs(hash(name)))
-    (directory / "hwymp").mkdir(parents=True)
+    (directory / "mpfix").mkdir(parents=True)
     for file in HEADERS:
         text = sources[file]
         if file == header:
             text = text.replace(old, new)
-        (directory / "hwymp" / file).write_text(text, encoding="utf8")
+        (directory / "mpfix" / file).write_text(text, encoding="utf8")
     executable = directory / "mutant.exe"
     command = [compiler, "-std=c++20", "-O1", f"-I{directory}", *build_flags,
                "-o", str(executable)]
@@ -405,7 +405,7 @@ def main():
     ]
     arithmetic = [str(ROOT / "tests" / "float_oracle_test.cpp"), *common]
     conversions = [str(ROOT / "tests" / "convert_oracle_test.cpp"), *common]
-    sources = {file: (ROOT / "include" / "hwymp" / file).read_text(
+    sources = {file: (ROOT / "include" / "mpfix" / file).read_text(
         encoding="utf8") for file in HEADERS}
     runs = [((name, "float.h", old, new), arithmetic)
             for name, old, new in MUTATIONS]

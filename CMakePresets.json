@@ -26,7 +26,7 @@
       },
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
-        "HWYMP_ENABLE_ORACLE": "ON",
+        "MPFIX_ENABLE_ORACLE": "ON",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md-v143",
         "VCPKG_HOST_TRIPLET": "x64-windows-static-md-v143",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed"
@@ -57,9 +57,9 @@
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
-        "HWYMP_BUILD_TESTS": "OFF",
-        "HWYMP_ENABLE_ORACLE": "OFF",
-        "HWYMP_BUILD_BENCHMARKS": "ON",
+        "MPFIX_BUILD_TESTS": "OFF",
+        "MPFIX_ENABLE_ORACLE": "OFF",
+        "MPFIX_BUILD_BENCHMARKS": "ON",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md-v143-zen3",
         "VCPKG_HOST_TRIPLET": "x64-windows-static-md-v143-zen3",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed_zen3"

@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // The headers must compile after <windows.h> without NOMINMAX or
@@ -11,10 +11,10 @@
 
 #include <gtest/gtest.h>
 
-#include "hwymp/charconv.h"
-#include "hwymp/float.h"
+#include "mpfix/charconv.h"
+#include "mpfix/float.h"
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 TEST(WindowsHeader, Compiles) {
@@ -24,4 +24,4 @@ TEST(WindowsHeader, Compiles) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

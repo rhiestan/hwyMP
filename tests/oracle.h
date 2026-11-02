@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // The MPFR oracle shared by the differential tests. MPFR runs with its wide
@@ -8,8 +8,8 @@
 // explicitly. MPFR has no ties-away mode, so ties are detected by rounding
 // towards zero with one extra bit.
 
-#ifndef HWYMP_TESTS_ORACLE_H_
-#define HWYMP_TESTS_ORACLE_H_
+#ifndef MPFIX_TESTS_ORACLE_H_
+#define MPFIX_TESTS_ORACLE_H_
 
 #include <gmp.h>
 #include <gtest/gtest.h>
@@ -21,9 +21,9 @@
 #include <cstdlib>
 #include <string>
 
-#include "hwymp/float.h"
+#include "mpfix/float.h"
 
-namespace hwymp::test {
+namespace mpfix::test {
 
 constexpr Rounding kModes[] = {Rounding::kNearestEven, Rounding::kNearestAway,
                                Rounding::kTowardZero, Rounding::kUp,
@@ -230,7 +230,7 @@ bool SameResult(const F& x, const F& y) {
 }
 
 int TestScale() {
-  const char* text = std::getenv("HWYMP_TEST_SCALE");
+  const char* text = std::getenv("MPFIX_TEST_SCALE");
   const int scale = text != nullptr ? std::atoi(text) : 1;
   return scale > 0 ? scale : 1;
 }
@@ -350,6 +350,6 @@ F RandomValue(Random& random) {
   }
 }
 
-}  // namespace hwymp::test
+}  // namespace mpfix::test
 
-#endif  // HWYMP_TESTS_ORACLE_H_
+#endif  // MPFIX_TESTS_ORACLE_H_

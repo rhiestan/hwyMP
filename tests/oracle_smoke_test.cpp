@@ -1,8 +1,8 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Confirms that GMP and MPFR link and work. They are test and benchmark
-// dependencies only: the hwyMP library itself must never use them.
+// dependencies only: the mpfix library itself must never use them.
 
 #include <gmp.h>
 #include <gtest/gtest.h>

@@ -1,6 +1,6 @@
 {
-  "name": "hwymp-oracle-deps",
+  "name": "mpfix-oracle-deps",
   "version-string": "0",
-  "description": "GMP and MPFR for tests and benchmarks only. The hwyMP library does not use them.",
+  "description": "GMP and MPFR for tests and benchmarks only. The mpfix library does not use them.",
   "dependencies": ["gmp", "mpfr"]
 }

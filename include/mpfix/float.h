@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Fixed-size IEEE 754 binary floating point.
@@ -22,8 +22,8 @@
 // quieted. An invalid operation returns the positive default quiet NaN.
 // fma(0, inf, qNaN) returns the NaN without raising invalid.
 
-#ifndef HWYMP_FLOAT_H_
-#define HWYMP_FLOAT_H_
+#ifndef MPFIX_FLOAT_H_
+#define MPFIX_FLOAT_H_
 
 #include <array>
 #include <bit>
@@ -34,9 +34,9 @@
 #include <limits>
 #include <type_traits>
 
-#include "hwymp/limb_ops.h"
+#include "mpfix/limb_ops.h"
 
-namespace hwymp {
+namespace mpfix {
 
 enum class Rounding : std::uint8_t {
   kNearestEven,
@@ -106,7 +106,7 @@ constexpr int LimbsFor(int bits) { return (bits + kLimbBits - 1) / kLimbBits; }
 
 // Decides whether a discarded fraction rounds the magnitude up. `round_bit` is
 // the most significant discarded bit and `sticky` is the OR of the rest.
-HWYMP_ALWAYS_INLINE constexpr bool ShouldRoundUp(Rounding mode, bool negative,
+MPFIX_ALWAYS_INLINE constexpr bool ShouldRoundUp(Rounding mode, bool negative,
                                                  bool is_odd, bool round_bit,
                                                  bool sticky) noexcept {
   switch (mode) {
@@ -184,7 +184,7 @@ constexpr int CompareLimbs(const std::array<limb_t, N>& x,
 // remainder_hi:remainder_lo. Requires hi >= 2^62, so that the root fills 64
 // bits. The hardware estimate is only a starting point, so the host's rounding
 // mode does not affect the result.
-HWYMP_ALWAYS_INLINE limb_t IntegerSqrt(limb_t hi, limb_t lo,
+MPFIX_ALWAYS_INLINE limb_t IntegerSqrt(limb_t hi, limb_t lo,
                                        limb_t& remainder_hi,
                                        limb_t& remainder_lo) noexcept {
   // root^2 is about hi / 2^10, so root * 2^37 estimates sqrt(hi:lo).
@@ -828,7 +828,7 @@ class Float {
   // Rounds to P bits. Returns true when the significand overflowed, in which
   // case it is left as 2^(64L - 1) and the exponent must grow by one.
   template <class Env>
-  HWYMP_ALWAYS_INLINE static bool RoundToPrecision(bool negative,
+  MPFIX_ALWAYS_INLINE static bool RoundToPrecision(bool negative,
                                                    Extended& value,
                                                    const Env& env) noexcept {
     bool is_odd;
@@ -863,7 +863,7 @@ class Float {
 
   // Produces the final result from a normalized value of any exponent.
   template <class Env>
-  HWYMP_ALWAYS_INLINE static Float Finish(bool negative, std::int32_t exponent,
+  MPFIX_ALWAYS_INLINE static Float Finish(bool negative, std::int32_t exponent,
                                           Extended& value,
                                           const Env& env) noexcept {
     if (exponent < kEmin || exponent > kEmax) [[unlikely]] {
@@ -987,7 +987,7 @@ class Float {
   // --- Addition and subtraction ---
 
   // Shifts `lesser` right by distance >= 0, jamming lost bits into `rest`.
-  HWYMP_ALWAYS_INLINE static Extended AlignRight(const Limbs& lesser,
+  MPFIX_ALWAYS_INLINE static Extended AlignRight(const Limbs& lesser,
                                                  std::int32_t distance) noexcept {
     constexpr int kWords = static_cast<int>(kLimbs);
     if (distance >= (kWords + 1) * kLimbBits) [[unlikely]] {
@@ -1058,7 +1058,7 @@ class Float {
   // Computes a + b, using b_sign in place of b's sign so that subtraction
   // shares this code.
   template <class Env>
-  HWYMP_ALWAYS_INLINE static Float AddImpl(const Float& a, const Float& b,
+  MPFIX_ALWAYS_INLINE static Float AddImpl(const Float& a, const Float& b,
                                            std::uint32_t b_sign,
                                            const Env& env) noexcept {
     if (!IsRegular(a) || !IsRegular(b)) [[unlikely]] {
@@ -1125,7 +1125,7 @@ class Float {
   }
 
   // Shifts left by `shift`, which is 0 or 1, without branching on it.
-  HWYMP_ALWAYS_INLINE static void ShiftLeftByBit(Extended& value,
+  MPFIX_ALWAYS_INLINE static void ShiftLeftByBit(Extended& value,
                                                  int shift) noexcept {
     const int complement = kLimbBits - 1 - shift;
     for (std::size_t i = kLimbs - 1; i > 0; --i) {
@@ -1173,7 +1173,7 @@ class Float {
   }
 
   template <class Env>
-  HWYMP_ALWAYS_INLINE static Float MulImpl(const Float& a, const Float& b,
+  MPFIX_ALWAYS_INLINE static Float MulImpl(const Float& a, const Float& b,
                                            const Env& env) noexcept {
     const bool negative = (a.negative_ ^ b.negative_) != 0;
     if (!IsRegular(a) || !IsRegular(b)) [[unlikely]] {
@@ -1201,7 +1201,7 @@ class Float {
     return Finish(negative, exponent, value, env);
   }
 
-  HWYMP_ALWAYS_INLINE static std::array<limb_t, 2 * kLimbs>
+  MPFIX_ALWAYS_INLINE static std::array<limb_t, 2 * kLimbs>
   MultiplySignificands(const Limbs& a, const Limbs& b) noexcept {
     std::array<limb_t, 2 * kLimbs> product;
     if constexpr (kLimbs > 4) {
@@ -1256,7 +1256,7 @@ class Float {
   // Sets r to r * 2^64 mod divisor and returns the quotient limb. Requires
   // r < divisor, a normalized divisor, and `inverse` from reciprocal_3by2 on the
   // divisor's top two limbs.
-  HWYMP_ALWAYS_INLINE static limb_t DivideStep(Limbs& r, const Limbs& divisor,
+  MPFIX_ALWAYS_INLINE static limb_t DivideStep(Limbs& r, const Limbs& divisor,
                                                limb_t inverse) noexcept {
     const limb_t d1 = divisor[kLimbs - 1];
     limb_t d0 = 0;
@@ -1336,7 +1336,7 @@ class Float {
   }
 
   template <class Env>
-  HWYMP_ALWAYS_INLINE static Float DivImpl(const Float& a, const Float& b,
+  MPFIX_ALWAYS_INLINE static Float DivImpl(const Float& a, const Float& b,
                                            const Env& env) noexcept {
     const bool negative = (a.negative_ ^ b.negative_) != 0;
     if (!IsRegular(a) || !IsRegular(b)) [[unlikely]] {
@@ -1452,7 +1452,7 @@ class Float {
 
   // Finds limb j of the root and updates the remainder. Limbs above j are final,
   // and `inverse` matches the root's top two limbs.
-  HWYMP_ALWAYS_INLINE static void NextRootLimb(
+  MPFIX_ALWAYS_INLINE static void NextRootLimb(
       Limbs& root, std::array<limb_t, 2 * kLimbs>& rem, std::size_t j,
       limb_t inverse) noexcept {
     constexpr std::size_t kWide = 2 * kLimbs;
@@ -2169,6 +2169,6 @@ I to_integer_exact(const Float<P, E>& x, Rounding mode,
                                            detail::ContextEnv{context});
 }
 
-}  // namespace hwymp
+}  // namespace mpfix
 
-#endif  // HWYMP_FLOAT_H_
+#endif  // MPFIX_FLOAT_H_

@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Single-threaded throughput of decimal string conversions, on identical
@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-#include "hwymp/charconv.h"
+#include "mpfix/charconv.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -64,7 +64,7 @@ double BestNanoseconds(Pass pass, int operations) {
 
 template <int P, int E>
 void ReportFormat(const char* format, bool wide) {
-  using F = hwymp::Float<P, E>;
+  using F = mpfix::Float<P, E>;
   using Boost = boost::multiprecision::number<
       boost::multiprecision::cpp_bin_float<
           P, boost::multiprecision::backends::digit_base_2>,
@@ -85,7 +85,7 @@ void ReportFormat(const char* format, bool wide) {
     const int exponent =
         static_cast<int>(Mix(state) % (2 * spread + 1)) - spread;
     values[i] = F::FromRaw((Mix(state) & 1) != 0, exponent, limbs);
-    strings[i] = hwymp::to_string(values[i]);
+    strings[i] = mpfix::to_string(values[i]);
   }
   struct MpfrValue {
     mpfr_t x;
@@ -104,7 +104,7 @@ void ReportFormat(const char* format, bool wide) {
         std::size_t total = 0;
         for (const F& x : values) {
           const auto result =
-              hwymp::to_chars(buffer, buffer + sizeof(buffer), x,
+              mpfix::to_chars(buffer, buffer + sizeof(buffer), x,
                               std::chars_format::scientific, digits - 1);
           total += static_cast<std::size_t>(result.ptr - buffer);
         }
@@ -116,7 +116,7 @@ void ReportFormat(const char* format, bool wide) {
         std::size_t total = 0;
         for (const F& x : values) {
           const auto result =
-              hwymp::to_chars(buffer, buffer + sizeof(buffer), x);
+              mpfix::to_chars(buffer, buffer + sizeof(buffer), x);
           total += static_cast<std::size_t>(result.ptr - buffer);
         }
         sink = total;
@@ -127,7 +127,7 @@ void ReportFormat(const char* format, bool wide) {
         std::size_t total = 0;
         for (const std::string& s : strings) {
           F x;
-          hwymp::from_chars(s.data(), s.data() + s.size(), x);
+          mpfix::from_chars(s.data(), s.data() + s.size(), x);
           total += x.raw_limbs()[0];
         }
         sink = total;
@@ -182,7 +182,7 @@ void ReportFormat(const char* format, bool wide) {
 
   for (auto& value : mpfr_values) mpfr_clear(value.x);
   const char* range = wide ? "wide" : "near 1";
-  std::printf("%-10s %-7s %-6s %9.0f %9.0f %9.0f\n", format, range, "hwyMP",
+  std::printf("%-10s %-7s %-6s %9.0f %9.0f %9.0f\n", format, range, "mpfix",
               print_ours, shortest_ours, parse_ours);
   std::printf("%-10s %-7s %-6s %9.0f %9s %9.0f\n", format, range, "MPFR",
               print_mpfr, "", parse_mpfr);

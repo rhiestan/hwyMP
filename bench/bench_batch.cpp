@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Prototype for the batch decision: binary256 add and mul on Highway vectors,
@@ -18,7 +18,7 @@
 
 #include "hwy/aligned_allocator.h"
 #include "hwy/highway.h"
-#include "hwymp/float.h"
+#include "mpfix/float.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -30,7 +30,7 @@ namespace {
 
 namespace hn = hwy::HWY_NAMESPACE;
 
-using F = hwymp::binary256;
+using F = mpfix::binary256;
 using D = hn::ScalableTag<std::uint64_t>;
 using Vec = hn::Vec<D>;
 

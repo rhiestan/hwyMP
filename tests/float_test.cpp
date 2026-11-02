@@ -1,10 +1,10 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Known-answer tests that need no oracle: encodings, special values, the NaN
 // rules (which MPFR does not model) and comparisons.
 
-#include "hwymp/float.h"
+#include "mpfix/float.h"
 
 #include <gtest/gtest.h>
 
@@ -15,7 +15,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 using Tiny = Float<8, 4>;  // 12 bits: 1 sign, 4 exponent, 7 trailing.
@@ -487,4 +487,4 @@ TEST(Sqrt, Mpfr422Regression) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

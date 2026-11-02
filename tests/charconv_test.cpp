@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // String conversions. Float<53, 11> has the values of double, so the C and C++
@@ -6,7 +6,7 @@
 // The differential tests against MPFR, for the wide formats, are in
 // convert_oracle_test.cpp.
 
-#include "hwymp/charconv.h"
+#include "mpfix/charconv.h"
 
 #include <gtest/gtest.h>
 
@@ -22,9 +22,9 @@
 #include <sstream>
 #include <string>
 
-#include "hwymp/bigint.h"
+#include "mpfix/bigint.h"
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 using detail::BigUint;
@@ -470,18 +470,18 @@ TEST(Charconv, FromString) {
 
 // The example in README.md.
 TEST(Charconv, ReadmeExample) {
-  using hwymp::binary256;
+  using mpfix::binary256;
 
   binary256 x = 1.5;
   binary256 third = binary256(1) / binary256(3);
   double d = static_cast<double>(third);
 
-  hwymp::Context context{hwymp::Rounding::kUp};
-  float f = hwymp::convert<float>(third, context);
-  long n = hwymp::to_integer<long>(x, hwymp::Rounding::kNearestEven);
+  mpfix::Context context{mpfix::Rounding::kUp};
+  float f = mpfix::convert<float>(third, context);
+  long n = mpfix::to_integer<long>(x, mpfix::Rounding::kNearestEven);
 
-  std::string text = hwymp::to_string(third);
-  binary256 y = hwymp::from_string<binary256>("0.1");
+  std::string text = mpfix::to_string(third);
+  binary256 y = mpfix::from_string<binary256>("0.1");
   std::ostringstream out;
   out << std::setprecision(40) << y << '\n';
 
@@ -489,7 +489,7 @@ TEST(Charconv, ReadmeExample) {
   // The nearest float is above 1/3, so rounding up gives it too.
   EXPECT_EQ(f, 1.0f / 3.0f);
   EXPECT_EQ(n, 2);
-  EXPECT_EQ(hwymp::from_string<binary256>(text), third);
+  EXPECT_EQ(mpfix::from_string<binary256>(text), third);
   // %g drops trailing zeros.
   EXPECT_EQ(out.str(), "0.1\n");
 }
@@ -529,4 +529,4 @@ TEST(Charconv, Streams) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

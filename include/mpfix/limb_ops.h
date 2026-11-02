@@ -1,61 +1,61 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Lowest-level 64-bit limb primitives: add/subtract with carry, widening
 // multiply, 128-by-64 and 192-by-128 division, shifts and bit scans.
 //
 // Every operation has a portable constexpr implementation in
-// hwymp::detail::portable. The public functions forward to compiler intrinsics
+// mpfix::detail::portable. The public functions forward to compiler intrinsics
 // or inline assembly at run time. __int128 is deliberately not used here,
 // because MSVC does not provide it.
 
-#ifndef HWYMP_LIMB_OPS_H_
-#define HWYMP_LIMB_OPS_H_
+#ifndef MPFIX_LIMB_OPS_H_
+#define MPFIX_LIMB_OPS_H_
 
 #include <bit>
 #include <cstdint>
 #include <type_traits>
 
 #if defined(_M_X64) && !defined(_M_ARM64EC)
-#define HWYMP_ARCH_X64 1
+#define MPFIX_ARCH_X64 1
 #elif defined(__x86_64__)
-#define HWYMP_ARCH_X64 1
+#define MPFIX_ARCH_X64 1
 #else
-#define HWYMP_ARCH_X64 0
+#define MPFIX_ARCH_X64 0
 #endif
 
 #if defined(_M_ARM64) || defined(__aarch64__)
-#define HWYMP_ARCH_ARM64 1
+#define MPFIX_ARCH_ARM64 1
 #else
-#define HWYMP_ARCH_ARM64 0
+#define MPFIX_ARCH_ARM64 0
 #endif
 
 // GNU-style inline assembly; also true for Clang targeting the MSVC ABI.
 #if defined(__GNUC__) || defined(__clang__)
-#define HWYMP_GNU_ASM 1
+#define MPFIX_GNU_ASM 1
 #else
-#define HWYMP_GNU_ASM 0
+#define MPFIX_GNU_ASM 0
 #endif
 
 #if defined(_MSC_VER)
 #include <intrin.h>
-#elif HWYMP_ARCH_X64
+#elif MPFIX_ARCH_X64
 #include <immintrin.h>
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#define HWYMP_ALWAYS_INLINE __forceinline
+#define MPFIX_ALWAYS_INLINE __forceinline
 #else
-#define HWYMP_ALWAYS_INLINE inline __attribute__((always_inline))
+#define MPFIX_ALWAYS_INLINE inline __attribute__((always_inline))
 #endif
 
 #if defined(__has_builtin)
-#define HWYMP_HAS_BUILTIN(x) __has_builtin(x)
+#define MPFIX_HAS_BUILTIN(x) __has_builtin(x)
 #else
-#define HWYMP_HAS_BUILTIN(x) 0
+#define MPFIX_HAS_BUILTIN(x) 0
 #endif
 
-namespace hwymp {
+namespace mpfix {
 
 using limb_t = std::uint64_t;
 // Carry or borrow flag, always 0 or 1. It matches the intrinsics' type so that
@@ -141,23 +141,23 @@ constexpr limb_t div_2by1(limb_t hi, limb_t lo, limb_t d,
 
 namespace detail {
 
-#if HWYMP_GNU_ASM && HWYMP_ARCH_X64 && !defined(_MSC_VER) && !defined(__BMI2__)
-HWYMP_ALWAYS_INLINE limb_t mul_wide_asm(limb_t a, limb_t b,
+#if MPFIX_GNU_ASM && MPFIX_ARCH_X64 && !defined(_MSC_VER) && !defined(__BMI2__)
+MPFIX_ALWAYS_INLINE limb_t mul_wide_asm(limb_t a, limb_t b,
                                         limb_t& hi) noexcept {
   limb_t lo;
   __asm__("mulq %3" : "=a"(lo), "=d"(hi) : "%0"(a), "r"(b) : "cc");
   return lo;
 }
-#elif HWYMP_GNU_ASM && HWYMP_ARCH_ARM64
-HWYMP_ALWAYS_INLINE limb_t mul_wide_asm(limb_t a, limb_t b,
+#elif MPFIX_GNU_ASM && MPFIX_ARCH_ARM64
+MPFIX_ALWAYS_INLINE limb_t mul_wide_asm(limb_t a, limb_t b,
                                         limb_t& hi) noexcept {
   __asm__("umulh %0, %1, %2" : "=r"(hi) : "r"(a), "r"(b));
   return a * b;
 }
 #endif
 
-#if HWYMP_GNU_ASM && HWYMP_ARCH_X64
-HWYMP_ALWAYS_INLINE limb_t div_2by1_asm(limb_t hi, limb_t lo, limb_t d,
+#if MPFIX_GNU_ASM && MPFIX_ARCH_X64
+MPFIX_ALWAYS_INLINE limb_t div_2by1_asm(limb_t hi, limb_t lo, limb_t d,
                                         limb_t& remainder) noexcept {
   limb_t quotient;
   __asm__("divq %4"
@@ -171,14 +171,14 @@ HWYMP_ALWAYS_INLINE limb_t div_2by1_asm(limb_t hi, limb_t lo, limb_t d,
 }  // namespace detail
 
 // Returns a + b + carry; `carry` is both the incoming and outgoing carry.
-HWYMP_ALWAYS_INLINE constexpr limb_t adc(limb_t a, limb_t b,
+MPFIX_ALWAYS_INLINE constexpr limb_t adc(limb_t a, limb_t b,
                                          carry_t& carry) noexcept {
   if (std::is_constant_evaluated()) return detail::portable::adc(a, b, carry);
-#if HWYMP_ARCH_X64
+#if MPFIX_ARCH_X64
   unsigned long long sum;
   carry = _addcarry_u64(carry, a, b, &sum);
   return sum;
-#elif HWYMP_HAS_BUILTIN(__builtin_addcll)
+#elif MPFIX_HAS_BUILTIN(__builtin_addcll)
   unsigned long long carry_out;
   const limb_t sum = __builtin_addcll(a, b, carry, &carry_out);
   carry = static_cast<carry_t>(carry_out);
@@ -189,14 +189,14 @@ HWYMP_ALWAYS_INLINE constexpr limb_t adc(limb_t a, limb_t b,
 }
 
 // Returns a - b - borrow; `borrow` is both the incoming and outgoing borrow.
-HWYMP_ALWAYS_INLINE constexpr limb_t sbb(limb_t a, limb_t b,
+MPFIX_ALWAYS_INLINE constexpr limb_t sbb(limb_t a, limb_t b,
                                          carry_t& borrow) noexcept {
   if (std::is_constant_evaluated()) return detail::portable::sbb(a, b, borrow);
-#if HWYMP_ARCH_X64
+#if MPFIX_ARCH_X64
   unsigned long long difference;
   borrow = _subborrow_u64(borrow, a, b, &difference);
   return difference;
-#elif HWYMP_HAS_BUILTIN(__builtin_subcll)
+#elif MPFIX_HAS_BUILTIN(__builtin_subcll)
   unsigned long long borrow_out;
   const limb_t difference = __builtin_subcll(a, b, borrow, &borrow_out);
   borrow = static_cast<carry_t>(borrow_out);
@@ -207,23 +207,23 @@ HWYMP_ALWAYS_INLINE constexpr limb_t sbb(limb_t a, limb_t b,
 }
 
 // Returns the low 64 bits of a * b and stores the high 64 bits in `hi`.
-HWYMP_ALWAYS_INLINE constexpr limb_t mul_wide(limb_t a, limb_t b,
+MPFIX_ALWAYS_INLINE constexpr limb_t mul_wide(limb_t a, limb_t b,
                                               limb_t& hi) noexcept {
   if (std::is_constant_evaluated()) return detail::portable::mul_wide(a, b, hi);
-#if defined(_MSC_VER) && HWYMP_ARCH_X64
+#if defined(_MSC_VER) && MPFIX_ARCH_X64
   unsigned long long high;
   const limb_t low = _umul128(a, b, &high);
   hi = high;
   return low;
-#elif HWYMP_ARCH_X64 && defined(__BMI2__)
+#elif MPFIX_ARCH_X64 && defined(__BMI2__)
   unsigned long long high;
   const limb_t low = _mulx_u64(a, b, &high);
   hi = high;
   return low;
-#elif defined(_MSC_VER) && HWYMP_ARCH_ARM64
+#elif defined(_MSC_VER) && MPFIX_ARCH_ARM64
   hi = __umulh(a, b);
   return a * b;
-#elif HWYMP_GNU_ASM && (HWYMP_ARCH_X64 || HWYMP_ARCH_ARM64)
+#elif MPFIX_GNU_ASM && (MPFIX_ARCH_X64 || MPFIX_ARCH_ARM64)
   return detail::mul_wide_asm(a, b, hi);
 #else
   return detail::portable::mul_wide(a, b, hi);
@@ -231,8 +231,8 @@ HWYMP_ALWAYS_INLINE constexpr limb_t mul_wide(limb_t a, limb_t b,
 }
 
 // Returns the number of leading zero bits; 64 when x == 0.
-HWYMP_ALWAYS_INLINE constexpr int countl_zero(limb_t x) noexcept {
-#if defined(_MSC_VER) && !defined(__clang__) && HWYMP_ARCH_X64
+MPFIX_ALWAYS_INLINE constexpr int countl_zero(limb_t x) noexcept {
+#if defined(_MSC_VER) && !defined(__clang__) && MPFIX_ARCH_X64
   // std::countl_zero adds a run-time CPU feature check on MSVC.
   if (!std::is_constant_evaluated()) {
     unsigned long index;
@@ -243,8 +243,8 @@ HWYMP_ALWAYS_INLINE constexpr int countl_zero(limb_t x) noexcept {
 }
 
 // Returns the number of trailing zero bits; 64 when x == 0.
-HWYMP_ALWAYS_INLINE constexpr int countr_zero(limb_t x) noexcept {
-#if defined(_MSC_VER) && !defined(__clang__) && HWYMP_ARCH_X64
+MPFIX_ALWAYS_INLINE constexpr int countr_zero(limb_t x) noexcept {
+#if defined(_MSC_VER) && !defined(__clang__) && MPFIX_ARCH_X64
   if (!std::is_constant_evaluated()) {
     unsigned long index;
     return _BitScanForward64(&index, x) ? static_cast<int>(index) : 64;
@@ -254,27 +254,27 @@ HWYMP_ALWAYS_INLINE constexpr int countr_zero(limb_t x) noexcept {
 }
 
 // Returns the high limb of (hi:lo) << count. Requires 0 < count < 64.
-HWYMP_ALWAYS_INLINE constexpr limb_t shift_left_2(limb_t hi, limb_t lo,
+MPFIX_ALWAYS_INLINE constexpr limb_t shift_left_2(limb_t hi, limb_t lo,
                                                   int count) noexcept {
   return (hi << count) | (lo >> (kLimbBits - count));
 }
 
 // Returns the low limb of (hi:lo) >> count. Requires 0 < count < 64.
-HWYMP_ALWAYS_INLINE constexpr limb_t shift_right_2(limb_t hi, limb_t lo,
+MPFIX_ALWAYS_INLINE constexpr limb_t shift_right_2(limb_t hi, limb_t lo,
                                                    int count) noexcept {
   return (lo >> count) | (hi << (kLimbBits - count));
 }
 
 // Returns hi:lo / d and stores the remainder. Requires hi < d, which also
 // guarantees that d != 0 and that the quotient fits in one limb.
-HWYMP_ALWAYS_INLINE constexpr limb_t div_2by1(limb_t hi, limb_t lo, limb_t d,
+MPFIX_ALWAYS_INLINE constexpr limb_t div_2by1(limb_t hi, limb_t lo, limb_t d,
                                               limb_t& remainder) noexcept {
   if (std::is_constant_evaluated()) {
     return detail::portable::div_2by1(hi, lo, d, remainder);
   }
-#if HWYMP_GNU_ASM && HWYMP_ARCH_X64
+#if MPFIX_GNU_ASM && MPFIX_ARCH_X64
   return detail::div_2by1_asm(hi, lo, d, remainder);
-#elif defined(_MSC_VER) && HWYMP_ARCH_X64
+#elif defined(_MSC_VER) && MPFIX_ARCH_X64
   unsigned long long rem;
   const limb_t quotient = _udiv128(hi, lo, d, &rem);
   remainder = rem;
@@ -287,7 +287,7 @@ HWYMP_ALWAYS_INLINE constexpr limb_t div_2by1(limb_t hi, limb_t lo, limb_t d,
 // Returns floor((2^192 - 1) / (d1:d0)) - 2^64, for use with div_3by2. Requires
 // the top bit of d1 to be set. Method from Moller and Granlund, "Improved
 // division by invariant integers", IEEE Trans. Computers, 2011.
-HWYMP_ALWAYS_INLINE limb_t reciprocal_3by2(limb_t d1, limb_t d0) noexcept {
+MPFIX_ALWAYS_INLINE limb_t reciprocal_3by2(limb_t d1, limb_t d0) noexcept {
   limb_t unused;
   limb_t v = div_2by1(~d1, ~limb_t{0}, d1, unused);
   limb_t p = d1 * v + d0;
@@ -311,7 +311,7 @@ HWYMP_ALWAYS_INLINE limb_t reciprocal_3by2(limb_t d1, limb_t d0) noexcept {
 
 // Returns (u2:u1:u0) / (d1:d0) and stores the remainder in r1:r0. `v` must come
 // from reciprocal_3by2(d1, d0), and u2:u1 must be below d1:d0. Same source.
-HWYMP_ALWAYS_INLINE limb_t div_3by2(limb_t u2, limb_t u1, limb_t u0, limb_t d1,
+MPFIX_ALWAYS_INLINE limb_t div_3by2(limb_t u2, limb_t u1, limb_t u0, limb_t d1,
                                     limb_t d0, limb_t v, limb_t& r1,
                                     limb_t& r0) noexcept {
   limb_t q1;
@@ -346,6 +346,6 @@ HWYMP_ALWAYS_INLINE limb_t div_3by2(limb_t u2, limb_t u1, limb_t u0, limb_t d1,
   return q1;
 }
 
-}  // namespace hwymp
+}  // namespace mpfix
 
-#endif  // HWYMP_LIMB_OPS_H_
+#endif  // MPFIX_LIMB_OPS_H_

@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Exact unsigned integers of any size, for the string conversions. They are
@@ -6,8 +6,8 @@
 // Karatsuba above a threshold, and long division after Knuth, The Art of
 // Computer Programming, volume 2, section 4.3.1, algorithm D.
 
-#ifndef HWYMP_BIGINT_H_
-#define HWYMP_BIGINT_H_
+#ifndef MPFIX_BIGINT_H_
+#define MPFIX_BIGINT_H_
 
 #include <algorithm>
 #include <cstddef>
@@ -16,16 +16,16 @@
 #include <memory>
 #include <vector>
 
-#include "hwymp/limb_ops.h"
+#include "mpfix/limb_ops.h"
 
-namespace hwymp::detail {
+namespace mpfix::detail {
 
 inline constexpr limb_t kTenToThe19 = 10000000000000000000u;
 
 // Divides u1:u0 by a normalized d, given v = floor((2^128 - 1) / d) - 2^64,
 // and requires u1 < d. N. Möller and T. Granlund, "Improved division by
 // invariant integers", IEEE Transactions on Computers 60(2), 2011, algorithm 4.
-HWYMP_ALWAYS_INLINE limb_t DivPreinverted(limb_t u1, limb_t u0, limb_t d,
+MPFIX_ALWAYS_INLINE limb_t DivPreinverted(limb_t u1, limb_t u0, limb_t d,
                                           limb_t v, limb_t& remainder) {
   limb_t q1;
   limb_t q0 = mul_wide(v, u1, q1);
@@ -551,6 +551,6 @@ class BigUint {
   LimbVector limbs_;
 };
 
-}  // namespace hwymp::detail
+}  // namespace mpfix::detail
 
-#endif  // HWYMP_BIGINT_H_
+#endif  // MPFIX_BIGINT_H_

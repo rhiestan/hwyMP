@@ -1,7 +1,7 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-#include "hwymp/limb_ops.h"
+#include "mpfix/limb_ops.h"
 
 #include <gtest/gtest.h>
 
@@ -9,7 +9,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace hwymp {
+namespace mpfix {
 namespace {
 
 constexpr limb_t kMax = ~limb_t{0};
@@ -316,4 +316,4 @@ TEST(LimbOps, Div3by2) {
 }
 
 }  // namespace
-}  // namespace hwymp
+}  // namespace mpfix

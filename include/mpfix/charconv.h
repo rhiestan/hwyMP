@@ -1,4 +1,4 @@
-// Copyright 2026 The hwyMP Authors
+// Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Correctly rounded conversions between Float and character strings, in
@@ -19,8 +19,8 @@
 // Context flags tell overflow and underflow apart. Hexadecimal output always
 // has a leading 1, subnormals included.
 
-#ifndef HWYMP_CHARCONV_H_
-#define HWYMP_CHARCONV_H_
+#ifndef MPFIX_CHARCONV_H_
+#define MPFIX_CHARCONV_H_
 
 #include <algorithm>
 #include <bit>
@@ -37,10 +37,10 @@
 #include <type_traits>
 #include <vector>
 
-#include "hwymp/bigint.h"
-#include "hwymp/float.h"
+#include "mpfix/bigint.h"
+#include "mpfix/float.h"
 
-namespace hwymp {
+namespace mpfix {
 namespace detail {
 
 inline constexpr double kLog10Of2 = 0.301029995663981195;
@@ -1650,6 +1650,6 @@ std::istream& operator>>(std::istream& stream, Float<P, E>& x) {
   return stream;
 }
 
-}  // namespace hwymp
+}  // namespace mpfix
 
-#endif  // HWYMP_CHARCONV_H_
+#endif  // MPFIX_CHARCONV_H_
