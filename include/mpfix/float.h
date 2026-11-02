@@ -668,12 +668,68 @@ class Float {
     return NextImpl(x, false, detail::ContextEnv{context});
   }
 
+  // The neighbour of x in the direction of y, as in C: y itself if x == y,
+  // which gives the sign of y to a zero. Unlike next_up, a finite x stepping
+  // to infinity raises overflow and inexact, and a result that is subnormal or
+  // zero raises underflow and inexact.
+  friend Float nextafter(const Float& x, const Float& y) noexcept {
+    return NextAfterImpl(x, y, detail::NearestEnv{});
+  }
+  friend Float nextafter(const Float& x, const Float& y,
+                         Context& context) noexcept {
+    return NextAfterImpl(x, y, detail::ContextEnv{context});
+  }
+  // As nextafter, toward a long double, compared exactly.
+  friend Float nexttoward(const Float& x, long double y) noexcept {
+    return NextTowardImpl(x, y, detail::NearestEnv{});
+  }
+  friend Float nexttoward(const Float& x, long double y,
+                          Context& context) noexcept {
+    return NextTowardImpl(x, y, detail::ContextEnv{context});
+  }
+
   // x * 2^n.
   friend Float scalbn(const Float& x, int n) noexcept {
     return ScalbnImpl(x, n, detail::NearestEnv{});
   }
   friend Float scalbn(const Float& x, int n, Context& context) noexcept {
     return ScalbnImpl(x, n, detail::ContextEnv{context});
+  }
+  friend Float scalbln(const Float& x, long n) noexcept {
+    return ScalbnImpl(x, n, detail::NearestEnv{});
+  }
+  friend Float scalbln(const Float& x, long n, Context& context) noexcept {
+    return ScalbnImpl(x, n, detail::ContextEnv{context});
+  }
+  // The same as scalbn, since the radix is 2.
+  friend Float ldexp(const Float& x, int n) noexcept {
+    return ScalbnImpl(x, n, detail::NearestEnv{});
+  }
+  friend Float ldexp(const Float& x, int n, Context& context) noexcept {
+    return ScalbnImpl(x, n, detail::ContextEnv{context});
+  }
+
+  // Splits x into a significand in [0.5, 1) with the sign of x, which it
+  // returns, and a power of two, stored in *exponent. Subnormals return a
+  // normalized significand. Zeros, infinities and NaNs return x, quieted, and
+  // store 0. Always exact; only a signaling NaN raises a flag, invalid.
+  friend Float frexp(const Float& x, int* exponent) noexcept {
+    return FrexpImpl(x, exponent, detail::NearestEnv{});
+  }
+  friend Float frexp(const Float& x, int* exponent, Context& context) noexcept {
+    return FrexpImpl(x, exponent, detail::ContextEnv{context});
+  }
+
+  // Splits x into its integer part, stored in *integral, and its fractional
+  // part, which it returns. Both have the sign of x, so modf(-2) gives -0 and
+  // -2. Infinities give a zero fraction, and NaNs give NaN for both. Always
+  // exact; only a signaling NaN raises a flag, invalid.
+  friend Float modf(const Float& x, Float* integral) noexcept {
+    return ModfImpl(x, integral, detail::NearestEnv{});
+  }
+  friend Float modf(const Float& x, Float* integral,
+                    Context& context) noexcept {
+    return ModfImpl(x, integral, detail::ContextEnv{context});
   }
 
   static constexpr int kIlogbZero = (std::numeric_limits<int>::min)();
@@ -1848,13 +1904,83 @@ class Float {
     return from_bits(bits);
   }
 
+  // Steps from x toward y, given how they compare. Neither is NaN.
   template <class Env>
-  static Float ScalbnImpl(const Float& x, int n, const Env& env) noexcept {
+  static Float StepToward(const Float& x, std::partial_ordering order,
+                          bool y_negative, const Env& env) noexcept {
+    if (order == std::partial_ordering::equivalent) {
+      Float result = x;
+      result.negative_ = y_negative;
+      return result;
+    }
+    const Float result =
+        NextImpl(x, order == std::partial_ordering::less, env);
+    if (result.is_inf()) {
+      env.raise(kFlagOverflow | kFlagInexact);
+    } else if (result.is_zero() || result.is_subnormal()) {
+      env.raise(kFlagUnderflow | kFlagInexact);
+    }
+    return result;
+  }
+
+  template <class Env>
+  static Float NextAfterImpl(const Float& x, const Float& y,
+                             const Env& env) noexcept {
+    if (x.is_nan() || y.is_nan()) return PropagateNaN(x, y, env);
+    return StepToward(x, Order(x, y), y.negative_ != 0, env);
+  }
+
+  template <class Env>
+  static Float NextTowardImpl(const Float& x, long double y,
+                              const Env& env) noexcept {
+    if (x.is_nan()) return PropagateNaN(x, x, env);
+    if (std::isnan(y)) return QuietNaN();
+    // A format holding both exactly, in which they compare.
+    using Native = detail::NativeFormatOf<long double>;
+    using Wide = Float<(std::max)(P, Native::kDigits),
+                       (std::max)(E, Native::kExponentBits)>;
+    const Wide wide_x = Wide::ConvertFormat(x, detail::NearestEnv{});
+    const Wide wide_y(y);
+    return StepToward(x, wide_x <=> wide_y, std::signbit(y), env);
+  }
+
+  template <class Env>
+  static Float FrexpImpl(const Float& x, int* exponent,
+                         const Env& env) noexcept {
+    *exponent = 0;
+    if (x.is_nan()) return PropagateNaN(x, x, env);
+    if (!IsRegular(x)) return x;
+    *exponent = x.Exponent() + 1;
+    Float result = x;
+    result.biased_exponent_ = Bias(-1);
+    return result;
+  }
+
+  template <class Env>
+  static Float ModfImpl(const Float& x, Float* integral,
+                        const Env& env) noexcept {
+    if (x.is_nan()) return *integral = PropagateNaN(x, x, env);
+    *integral = RoundToIntegralImpl(x, detail::SilentEnv{Rounding::kTowardZero});
+    if (x.is_inf()) return Zero(x.negative_ != 0);
+    // Exact: below 1 the integer part is zero, and above it both operands
+    // lie on the grid of x's last place.
+    Float fraction = AddImpl(x, *integral, integral->negative_ ^ 1,
+                             detail::NearestEnv{});
+    fraction.negative_ = x.negative_;
+    return fraction;
+  }
+
+  template <class Env>
+  static Float ScalbnImpl(const Float& x, std::int64_t n,
+                          const Env& env) noexcept {
     if (x.is_nan()) return PropagateNaN(x, x, env);
     if (!IsRegular(x)) return x;
     // Clamping keeps the sum in range without changing any result, since a
     // value this far out overflows or vanishes whatever its significand.
     const std::int64_t limit = std::int64_t{1} << (E + 1);
+    // Clamping n first keeps the sum from overflowing for any long.
+    if (n > 2 * (limit + P)) n = 2 * (limit + P);
+    if (n < -2 * (limit + P)) n = -2 * (limit + P);
     std::int64_t exponent = std::int64_t{x.Exponent()} + n;
     if (exponent > limit + P) exponent = limit + P;
     if (exponent < -limit - P) exponent = -limit - P;

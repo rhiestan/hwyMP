@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <compare>
 #include <cstddef>
 #include <cstring>
@@ -305,7 +306,10 @@ std::vector<Small> SortedValues() {
   return sorted;
 }
 
-bool SameBits(const Small& a, const Small& b) { return a.to_bits() == b.to_bits(); }
+template <int P, int E>
+bool SameBits(const Float<P, E>& a, const Float<P, E>& b) {
+  return a.to_bits() == b.to_bits();
+}
 
 TEST(FloatNeighbours, StepsThroughEveryValueInOrder) {
   const std::vector<Small> sorted = SortedValues();
@@ -440,6 +444,156 @@ TEST(FloatScalbn, ExtremeCountsSaturate) {
   EXPECT_TRUE(scalbn(binary512::MaxFinite(), std::numeric_limits<int>::min())
                   .is_zero());
   EXPECT_TRUE(scalbn(one, 0) == one);
+}
+
+TEST(FloatScalbn, LdexpAndScalblnMatchScalbn) {
+  const binary256 one = scalbn(binary256::MinNormal(), -binary256::kEmin);
+  for (const int n : {-300000, -262378, -1000, -1, 0, 1, 1000, 262143, 300000}) {
+    EXPECT_TRUE(SameBits(ldexp(one, n), scalbn(one, n)));
+    EXPECT_TRUE(SameBits(scalbln(one, n), scalbn(one, n)));
+  }
+  // The count is clamped before it is added, so no long overflows.
+  const long huge = std::numeric_limits<long>::max();
+  const long tiny = std::numeric_limits<long>::min();
+  EXPECT_TRUE(scalbln(binary256::MaxFinite(), huge).is_inf());
+  EXPECT_TRUE(scalbln(binary256::MinSubnormal(), tiny).is_zero());
+  EXPECT_TRUE(scalbln(binary256::MinSubnormal(), huge).is_inf());
+  EXPECT_TRUE(scalbln(binary256::MaxFinite(), tiny).is_zero());
+
+  Context context{Rounding::kTowardZero};
+  EXPECT_TRUE(SameBits(ldexp(one, 300000, context), binary256::MaxFinite()));
+  EXPECT_EQ(context.flags, unsigned{kFlagOverflow | kFlagInexact});
+  context = Context{};
+  EXPECT_TRUE(scalbln(binary256::MinNormal(), -1, context).is_subnormal());
+  EXPECT_EQ(context.flags, 0u);
+}
+
+TEST(FloatFrexp, MatchesTheCLibraryOnEveryValue) {
+  for (const Small& x : SortedValues()) {
+    int exponent = 12345;
+    const Small significand = frexp(x, &exponent);
+    int expected_exponent = 12345;
+    const double expected =
+        std::frexp(static_cast<double>(x), &expected_exponent);
+    EXPECT_EQ(static_cast<double>(significand), expected);
+    EXPECT_EQ(significand.signbit(), x.signbit());
+    if (x.is_inf()) {
+      EXPECT_EQ(exponent, 0);  // The C value is unspecified here.
+    } else {
+      EXPECT_EQ(exponent, expected_exponent);
+    }
+    if (!x.is_zero() && !x.is_inf()) {
+      EXPECT_TRUE(SameBits(ldexp(significand, exponent), x));
+    }
+  }
+}
+
+TEST(FloatFrexp, ExtremesAndNaN) {
+  int exponent = 0;
+  const binary512 half = frexp(binary512::MaxFinite(), &exponent);
+  EXPECT_EQ(exponent, binary512::kEmax + 1);
+  EXPECT_TRUE(SameBits(ldexp(half, exponent), binary512::MaxFinite()));
+  frexp(binary512::MinSubnormal(true), &exponent);
+  EXPECT_EQ(exponent, binary512::kEmin - 488 + 1);
+  EXPECT_TRUE(frexp(binary512::MinSubnormal(true), &exponent) ==
+              -scalbn(binary512::MinNormal(), -binary512::kEmin - 1));
+
+  Context context;
+  exponent = 7;
+  EXPECT_TRUE(frexp(binary512::QuietNaN(), &exponent, context).is_nan());
+  EXPECT_EQ(exponent, 0);
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_FALSE(frexp(binary512::SignalingNaN(), &exponent, context)
+                   .is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+}
+
+TEST(FloatModf, MatchesTheCLibraryOnEveryValue) {
+  for (const Small& x : SortedValues()) {
+    Small integral = Small::QuietNaN();
+    const Small fraction = modf(x, &integral);
+    double expected_integral = 0;
+    const double expected =
+        std::modf(static_cast<double>(x), &expected_integral);
+    EXPECT_EQ(static_cast<double>(fraction), expected);
+    EXPECT_EQ(fraction.signbit(), std::signbit(expected));
+    EXPECT_EQ(static_cast<double>(integral), expected_integral);
+    EXPECT_EQ(integral.signbit(), std::signbit(expected_integral));
+  }
+}
+
+TEST(FloatModf, LargeValuesAndNaN) {
+  const binary128 one = scalbn(binary128::MinNormal(), -binary128::kEmin);
+  const binary128 big = scalbn(one, 112) + one;  // An odd integer.
+  binary128 integral;
+  const binary128 fraction = modf(-big, &integral);
+  EXPECT_TRUE(fraction.is_zero());
+  EXPECT_TRUE(fraction.signbit());
+  EXPECT_TRUE(integral == -big);
+  const binary128 x = scalbn(one, 111) + scalbn(one, -1);
+  EXPECT_TRUE(modf(x, &integral) == scalbn(one, -1));
+  EXPECT_TRUE(integral == scalbn(one, 111));
+
+  Context context;
+  EXPECT_FALSE(modf(binary128::SignalingNaN(), &integral, context)
+                   .is_signaling());
+  EXPECT_TRUE(integral.is_nan());
+  EXPECT_FALSE(integral.is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{};
+  modf(x, &integral, context);
+  EXPECT_EQ(context.flags, 0u);
+}
+
+TEST(FloatNextAfter, StepsTowardEveryValue) {
+  const std::vector<Small> sorted = SortedValues();
+  for (std::size_t i = 0; i < sorted.size(); ++i) {
+    for (std::size_t j = 0; j < sorted.size(); ++j) {
+      const Small& x = sorted[i];
+      const Small& y = sorted[j];
+      Small expected = y;
+      if (!(x == y)) expected = i < j ? next_up(x) : next_down(x);
+      Context context;
+      const Small result = nextafter(x, y, context);
+      EXPECT_TRUE(SameBits(result, expected)) << i << ' ' << j;
+      unsigned flags = 0;
+      if (!(x == y) && result.is_inf()) flags = kFlagOverflow | kFlagInexact;
+      if (!(x == y) && (result.is_zero() || result.is_subnormal())) {
+        flags = kFlagUnderflow | kFlagInexact;
+      }
+      EXPECT_EQ(context.flags, flags) << i << ' ' << j;
+      // Every Small is exactly a long double.
+      EXPECT_TRUE(SameBits(
+          nexttoward(x, static_cast<long double>(static_cast<double>(y))),
+          expected));
+    }
+  }
+}
+
+TEST(FloatNextAfter, TowardLongDoublesBetweenValues) {
+  const binary128 one = scalbn(binary128::MinNormal(), -binary128::kEmin);
+  const long double above = 1.0L + std::ldexp(1.0L, -40);
+  EXPECT_TRUE(SameBits(nexttoward(one, above), next_up(one)));
+  EXPECT_TRUE(SameBits(nexttoward(-one, -above), next_down(-one)));
+  EXPECT_TRUE(SameBits(nexttoward(one, -above), next_down(one)));
+  // Small cannot hold `above`, which still compares exactly.
+  EXPECT_TRUE(SameBits(nexttoward(Small(1.0), above), next_up(Small(1.0))));
+  EXPECT_TRUE(SameBits(nexttoward(Small(1.0), -above), next_down(Small(1.0))));
+  EXPECT_TRUE(SameBits(nexttoward(Small(1.0), 1.0L), Small(1.0)));
+  EXPECT_TRUE(SameBits(nexttoward(Small::Zero(), -0.0L), Small::Zero(true)));
+  EXPECT_TRUE(nexttoward(Small::MaxFinite(),
+                         std::numeric_limits<long double>::infinity())
+                  .is_inf());
+  EXPECT_TRUE(nexttoward(one, std::numeric_limits<long double>::quiet_NaN())
+                  .is_nan());
+
+  Context context;
+  EXPECT_FALSE(nextafter(binary128::SignalingNaN(), one, context)
+                   .is_signaling());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{};
+  EXPECT_TRUE(nextafter(one, binary128::QuietNaN(), context).is_nan());
+  EXPECT_EQ(context.flags, 0u);
 }
 
 TEST(FloatRounding, CStyleFunctions) {
