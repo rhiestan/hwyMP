@@ -150,6 +150,24 @@ Most results are decided by the bits of the working value alone: rounding
 boundaries all have at most P + 1 bits, so when the bits below those are
 neither nearly all zeros nor nearly all ones, the value rounds directly.
 
+C23's exp10, exp2m1, exp10m1, log2p1 and log10p1, with arguments as for exp
+and, for the last four, below 1/4 in magnitude:
+
+| Format | Library | exp10 | exp2m1 | exp10m1 | log2p1 | log10p1 |
+|---|---|---:|---:|---:|---:|---:|
+| binary128 | mpfix | 427 | 258 | 339 | 319 | 320 |
+| | MPFR | 2681 | 2648 | 8411 | 2488 | 6813 |
+| binary256 | mpfix | 747 | 469 | 586 | 676 | 680 |
+| | MPFR | 4741 | 3578 | 12615 | 5469 | 13465 |
+| binary512 | mpfix | 1901 | 1566 | 1578 | 2022 | 2029 |
+| | MPFR | 9362 | 6741 | 21076 | 8211 | 24434 |
+
+They share the kernels of exp and log1p; MPFR's versions are newer and 4 to
+25 times slower. exp10 reduces x log2(10) with log2(10) split in a 62-bit
+part, whose product with x is exact, and the rest. The functions are exact,
+tied or just beside a rounding boundary at integers and powers of the base,
+which they detect.
+
 ### Hyperbolic functions
 
 The same benchmark. sinh, cosh, tanh and asinh take arguments as for exp,

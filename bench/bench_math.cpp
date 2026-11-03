@@ -6,11 +6,11 @@
 // arguments for every library, all rounding to nearest. Exponentials, sinh,
 // cosh, tanh, asinh, sin, cos, tan and atan take arguments in (-20, 20);
 // logarithms and cbrt take positive values with binary exponents in
-// [-20, 20), and acosh one plus those; expm1 and log1p take arguments below
-// 1/4 in magnitude, and atanh, asin and acos below 1; pow takes x as for log
-// and y as for exp. MPFR runs at the format's precision;
-// Boost.Multiprecision's cpp_bin_float is timed for exp, log, the hyperbolic
-// and trigonometric functions and their inverses, and pow only.
+// [-20, 20), and acosh one plus those; expm1, exp2m1, exp10m1, log1p, log2p1
+// and log10p1 take arguments below 1/4 in magnitude, and atanh, asin and acos
+// below 1; pow takes x as for log and y as for exp. MPFR runs at the format's
+// precision; Boost.Multiprecision's cpp_bin_float is timed for exp, log, the
+// hyperbolic and trigonometric functions and their inverses, and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -137,8 +137,14 @@ void ReportFormat(const char* format) {
        [](const Boost& x) { return Boost(exp(x)); }},
       {"exp2", Range::kExp, [](const F& x) { return mpfix::exp2(x); },
        mpfr_exp2, nullptr},
+      {"exp10", Range::kExp, [](const F& x) { return mpfix::exp10(x); },
+       mpfr_exp10, nullptr},
       {"expm1", Range::kSmall, [](const F& x) { return mpfix::expm1(x); },
        mpfr_expm1, nullptr},
+      {"exp2m1", Range::kSmall, [](const F& x) { return mpfix::exp2m1(x); },
+       mpfr_exp2m1, nullptr},
+      {"exp10m1", Range::kSmall, [](const F& x) { return mpfix::exp10m1(x); },
+       mpfr_exp10m1, nullptr},
       {"log", Range::kLog, [](const F& x) { return mpfix::log(x); }, mpfr_log,
        [](const Boost& x) { return Boost(log(x)); }},
       {"log2", Range::kLog, [](const F& x) { return mpfix::log2(x); },
@@ -147,6 +153,10 @@ void ReportFormat(const char* format) {
        mpfr_log10, nullptr},
       {"log1p", Range::kSmall, [](const F& x) { return mpfix::log1p(x); },
        mpfr_log1p, nullptr},
+      {"log2p1", Range::kSmall, [](const F& x) { return mpfix::log2p1(x); },
+       mpfr_log2p1, nullptr},
+      {"log10p1", Range::kSmall, [](const F& x) { return mpfix::log10p1(x); },
+       mpfr_log10p1, nullptr},
       {"sinh", Range::kExp, [](const F& x) { return mpfix::sinh(x); },
        mpfr_sinh, [](const Boost& x) { return Boost(sinh(x)); }},
       {"cosh", Range::kExp, [](const F& x) { return mpfix::cosh(x); },
@@ -218,10 +228,10 @@ void ReportFormat(const char* format) {
           kCount);
     }
     if (boost_ns > 0) {
-      std::printf("%-10s %-6s %10.1f %10.1f %10.1f %8.2fx\n", format, c.name,
+      std::printf("%-10s %-7s %10.1f %10.1f %10.1f %8.2fx\n", format, c.name,
                   mpfix_ns, mpfr_ns, boost_ns, mpfr_ns / mpfix_ns);
     } else {
-      std::printf("%-10s %-6s %10.1f %10.1f %10s %8.2fx\n", format, c.name,
+      std::printf("%-10s %-7s %10.1f %10.1f %10s %8.2fx\n", format, c.name,
                   mpfix_ns, mpfr_ns, "-", mpfr_ns / mpfix_ns);
     }
     for (auto& x : mpfr_values) mpfr_clear(&x);
@@ -301,10 +311,10 @@ void ReportFormat(const char* format) {
           kCount);
     }
     if (boost_ns > 0) {
-      std::printf("%-10s %-6s %10.1f %10.1f %10.1f %8.2fx\n", format, c.name,
+      std::printf("%-10s %-7s %10.1f %10.1f %10.1f %8.2fx\n", format, c.name,
                   mpfix_ns, mpfr_ns, boost_ns, mpfr_ns / mpfix_ns);
     } else {
-      std::printf("%-10s %-6s %10.1f %10.1f %10s %8.2fx\n", format, c.name,
+      std::printf("%-10s %-7s %10.1f %10.1f %10s %8.2fx\n", format, c.name,
                   mpfix_ns, mpfr_ns, "-", mpfr_ns / mpfix_ns);
     }
     for (auto& x : mpfr_xs) mpfr_clear(&x);
@@ -319,7 +329,7 @@ int main() {
   ReportFirstCalls<113, 15>("binary128");
   ReportFirstCalls<237, 19>("binary256");
   ReportFirstCalls<489, 23>("binary512");
-  std::printf("%-10s %-6s %10s %10s %10s %9s\n", "format", "fn", "mpfix ns",
+  std::printf("%-10s %-7s %10s %10s %10s %9s\n", "format", "fn", "mpfix ns",
               "MPFR ns", "Boost ns", "MPFR/mpfix");
   ReportFormat<113, 15>("binary128");
   ReportFormat<237, 19>("binary256");

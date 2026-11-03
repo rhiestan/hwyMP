@@ -32,14 +32,20 @@ enum class Function {
   kTanh,
   kAsinh,
   kAcosh,
-  kAtanh
+  kAtanh,
+  kExp10,
+  kExp2m1,
+  kExp10m1,
+  kLog2p1,
+  kLog10p1
 };
 
 constexpr Function kFunctions[] = {
     Function::kExp,   Function::kExp2,  Function::kExpm1, Function::kLog,
     Function::kLog2,  Function::kLog10, Function::kLog1p, Function::kSinh,
     Function::kCosh,  Function::kTanh,  Function::kAsinh, Function::kAcosh,
-    Function::kAtanh};
+    Function::kAtanh, Function::kExp10, Function::kExp2m1, Function::kExp10m1,
+    Function::kLog2p1, Function::kLog10p1};
 
 const char* Name(Function f) {
   switch (f) {
@@ -69,6 +75,16 @@ const char* Name(Function f) {
       return "acosh";
     case Function::kAtanh:
       return "atanh";
+    case Function::kExp10:
+      return "exp10";
+    case Function::kExp2m1:
+      return "exp2m1";
+    case Function::kExp10m1:
+      return "exp10m1";
+    case Function::kLog2p1:
+      return "log2p1";
+    case Function::kLog10p1:
+      return "log10p1";
   }
   return "";
 }
@@ -101,6 +117,16 @@ int ApplyMpfr(Function f, mpfr_ptr result, mpfr_srcptr x, mpfr_rnd_t rnd) {
       return mpfr_acosh(result, x, rnd);
     case Function::kAtanh:
       return mpfr_atanh(result, x, rnd);
+    case Function::kExp10:
+      return mpfr_exp10(result, x, rnd);
+    case Function::kExp2m1:
+      return mpfr_exp2m1(result, x, rnd);
+    case Function::kExp10m1:
+      return mpfr_exp10m1(result, x, rnd);
+    case Function::kLog2p1:
+      return mpfr_log2p1(result, x, rnd);
+    case Function::kLog10p1:
+      return mpfr_log10p1(result, x, rnd);
   }
   return 0;
 }
@@ -137,6 +163,16 @@ F ApplyMpfix(Function f, const F& x, Context& context) {
         return acosh(x, context);
       case Function::kAtanh:
         return atanh(x, context);
+      case Function::kExp10:
+        return exp10(x, context);
+      case Function::kExp2m1:
+        return exp2m1(x, context);
+      case Function::kExp10m1:
+        return exp10m1(x, context);
+      case Function::kLog2p1:
+        return log2p1(x, context);
+      case Function::kLog10p1:
+        return log10p1(x, context);
     }
   } else {
     using Env = detail::ContextEnv;
@@ -168,6 +204,16 @@ F ApplyMpfix(Function f, const F& x, Context& context) {
         return detail::AcoshImpl<F, Env, kLevel>(x, env);
       case Function::kAtanh:
         return detail::AtanhImpl<F, Env, kLevel>(x, env);
+      case Function::kExp10:
+        return detail::Exp10Impl<F, Env, kLevel>(x, env);
+      case Function::kExp2m1:
+        return detail::Exp2m1Impl<F, Env, kLevel>(x, env);
+      case Function::kExp10m1:
+        return detail::Exp10m1Impl<F, Env, kLevel>(x, env);
+      case Function::kLog2p1:
+        return detail::LogPlus1Impl<2, F, Env, kLevel>(x, env);
+      case Function::kLog10p1:
+        return detail::LogPlus1Impl<10, F, Env, kLevel>(x, env);
     }
   }
   return x;
@@ -202,6 +248,16 @@ F ApplyMpfix(Function f, const F& x) {
       return acosh(x);
     case Function::kAtanh:
       return atanh(x);
+    case Function::kExp10:
+      return exp10(x);
+    case Function::kExp2m1:
+      return exp2m1(x);
+    case Function::kExp10m1:
+      return exp10m1(x);
+    case Function::kLog2p1:
+      return log2p1(x);
+    case Function::kLog10p1:
+      return log10p1(x);
   }
   return x;
 }
@@ -214,8 +270,10 @@ Expected<F> ExpectedResult(Function f, const F& x, Rounding mode) {
   // The poles, which MPFR reports through its own flags.
   const bool is_log = f == Function::kLog || f == Function::kLog2 ||
                       f == Function::kLog10;
-  if ((is_log && x.is_zero()) ||
-      (f == Function::kLog1p && x == F(-1))) {
+  const bool is_log_plus_1 = f == Function::kLog1p ||
+                             f == Function::kLog2p1 ||
+                             f == Function::kLog10p1;
+  if ((is_log && x.is_zero()) || (is_log_plus_1 && x == F(-1))) {
     return {F::Infinity(true), unsigned{kFlagDivByZero}};
   }
   if (f == Function::kAtanh && abs(x) == F(1)) {
@@ -296,8 +354,10 @@ F RandomRawArgument(Function f, Random& random) {
     case 0:
       return RandomValue<F>(random);
     case 1: {
-      // Next to one, or next to minus one for log1p.
-      const F one = f == Function::kLog1p && negative ? F(-1) : F(1);
+      // Next to one, or next to minus one for log1p, log2p1 and log10p1.
+      const bool plus_1 = f == Function::kLog1p || f == Function::kLog2p1 ||
+                          f == Function::kLog10p1;
+      const F one = plus_1 && negative ? F(-1) : F(1);
       const auto offset = static_cast<std::int32_t>(
           random.Below(static_cast<limb_t>(F::kPrecision) + 8));
       return one + MakeRegular<F>(random.Below(2) != 0, -offset,
@@ -318,6 +378,14 @@ F RandomRawArgument(Function f, Random& random) {
                  ? regular(-3 + static_cast<std::int32_t>(random.Below(3)))
                  : regular(std::bit_width(static_cast<unsigned>(F::kPrecision)) -
                            3 + static_cast<std::int32_t>(random.Below(3)));
+    case 5: {
+      // Small integers and halves, where exp10, exp2m1 and exp10m1 may be
+      // exact or tied.
+      const auto span = static_cast<limb_t>(4 * F::kPrecision);
+      return scalbn(F(static_cast<double>(random.Below(span)) -
+                      static_cast<double>(span / 2)),
+                    -static_cast<int>(random.Below(2)));
+    }
     default: {
       const auto span =
           static_cast<limb_t>(F::kPrecision + F::kExponentBits + 12);
@@ -366,6 +434,44 @@ TEST(MathOracle, LaterLevels) {
   CheckRandomly<binary128, 4>(300, 10);
   CheckRandomly<binary512, 2>(30, 11);
   CheckRandomly<binary512, 4>(10, 12);
+}
+
+// Integers, where exp10, exp2m1 and exp10m1 are exact, tied or just beside a
+// rounding boundary, and the arguments where log2p1 and log10p1 are exact or
+// just above an integer.
+template <class F>
+void CheckIntegerCases() {
+  for (const Rounding mode : kModes) {
+    for (int n = -(F::kPrecision + 8); n <= F::kPrecision + 8; ++n) {
+      for (const Function f :
+           {Function::kExp10, Function::kExp2m1, Function::kExp10m1}) {
+        EXPECT_TRUE(Check(f, F(n), mode)) << Name(f) << " " << n;
+      }
+      // 2^n - 1, and the powers of two around 2^(P + 4).
+      const F power = scalbn(F(1), n);
+      EXPECT_TRUE(Check(Function::kLog2p1, power - F(1), mode)) << n;
+      EXPECT_TRUE(Check(Function::kLog2p1, scalbn(power, F::kPrecision), mode))
+          << n;
+    }
+    F ten(1);
+    for (int n = 0; n < F::kPrecision / 3 + 4; ++n) {
+      EXPECT_TRUE(Check(Function::kLog10p1, ten - F(1), mode)) << n;
+      EXPECT_TRUE(Check(Function::kLog10p1, ten, mode)) << n;
+      EXPECT_TRUE(Check(Function::kLog10p1, next_up(ten - F(1)), mode)) << n;
+      ten = ten * F(10);
+    }
+    for (int n = 1; n < 4; ++n) {
+      EXPECT_TRUE(Check(Function::kExp10, F(n * 1000), mode)) << n;
+      EXPECT_TRUE(Check(Function::kExp10m1, F(n * 1000 + 1), mode)) << n;
+    }
+  }
+}
+
+TEST(MathOracle, IntegerCases) {
+  CheckIntegerCases<Float<11, 5>>();
+  CheckIntegerCases<Float<53, 11>>();
+  CheckIntegerCases<binary128>();
+  CheckIntegerCases<binary256>();
 }
 
 TEST(MathOracle, PowersAreExact) {

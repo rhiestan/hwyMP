@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Exponentials, logarithms, hyperbolic and trigonometric functions, powers and
-// roots: exp, exp2, expm1, log, log2, log10, log1p, sinh, cosh, tanh, asinh,
-// acosh, atanh, sin, cos, tan, asin, acos, atan, atan2, pow, cbrt and hypot,
-// and the constant pi, correctly rounded in all five modes, with the IEEE 754
-// flags when a Context is given.
+// roots: exp, exp2, exp10, expm1, exp2m1, exp10m1, log, log2, log10, log1p,
+// log2p1, log10p1, sinh, cosh, tanh, asinh, acosh, atanh, sin, cos, tan, asin,
+// acos, atan, atan2, pow, cbrt and hypot, and the constant pi, correctly
+// rounded in all five modes, with the IEEE 754 flags when a Context is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -102,6 +102,11 @@ struct MathConstants {
   W inv_ln2;   // Within two roundings.
   W ln10;
   W inv_ln10;  // Within two roundings.
+  // log2(10) = log2_10_hi + log2_10_lo, with a 62-bit high part, so that
+  // x log2_10_hi is exact for x of up to kPrecision - 62 bits; the sum is
+  // within 2^-(2 kPrecision) or so.
+  W log2_10_hi;
+  W log2_10_lo;
   std::array<W, kLogTerms> inv_odd;  // 1 / (2i + 1).
 
   MathConstants() {
@@ -126,6 +131,20 @@ struct MathConstants {
     ln10_fixed.Add(TwiceAtanhOfInverse(9, bits));
     ln10 = FromFixedPoint<W>(ln10_fixed, bits);
     inv_ln10 = one / ln10;
+
+    BigUint scaled = ln10_fixed;
+    scaled.ShiftLeft(bits);
+    BigUint log2_10_fixed;
+    BigUint remainder;
+    BigUint::DivRem(scaled, ln2_fixed, log2_10_fixed, remainder);
+    BigUint high = log2_10_fixed;
+    const std::size_t high_drop = high.bit_length() - 62;
+    high.ShiftRight(high_drop);
+    high.ShiftLeft(high_drop);
+    BigUint low = log2_10_fixed;
+    low.Sub(high);
+    log2_10_hi = FromFixedPoint<W>(high, bits);
+    log2_10_lo = FromFixedPoint<W>(low, bits);
 
     for (int i = 0; i < kLogTerms; ++i) {
       inv_odd[static_cast<std::size_t>(i)] = one / W(2 * i + 1);
@@ -1002,23 +1021,28 @@ F Log10Impl(const F& x, const Env& env) {
   });
 }
 
-template <class F, class Env, int kFirstLevel = 1>
-F Log1pImpl(const F& x, const Env& env) {
-  static_assert(F::kExponentBits <= 26, "exponent range too wide");
-  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
-  if (x.is_zero()) return x;
-  if (x.signbit()) {
-    if (x == F(-1)) {
-      env.raise(kFlagDivByZero);
-      return F::Infinity(true);
-    }
-    if (x < F(-1)) return InvalidResult<F>(env);
+// The special cases shared by log1p, log2p1 and log10p1. Returns true if they
+// decide the result.
+template <class F, class Env>
+bool Log1pSpecialCase(const F& x, const Env& env, F& result) {
+  if (x.is_nan()) {
+    result = FloatAccess::PropagateNaN(x, env);
+  } else if (x.is_zero() || (x.is_inf() && !x.signbit())) {
+    result = x;
+  } else if (x == F(-1)) {
+    env.raise(kFlagDivByZero);
+    result = F::Infinity(true);
+  } else if (x < F(-1)) {
+    result = InvalidResult<F>(env);
+  } else {
+    return false;
   }
-  if (x.is_inf()) return x;
-  // log(1 + x) = x - x^2/2 + ..., always below x.
-  if (x.raw_exponent() <= -(F::kPrecision + 3)) {
-    return RoundBeside(x, false, env);
-  }
+  return true;
+}
+
+// log(1 + x) in base e, 2 or 10, for x outside the special cases.
+template <int kBase, class F, int kFirstLevel, class Env>
+F Log1pEvaluate(const F& x, const Env& env) {
   return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
     using W = typename decltype(tag)::type;
     const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
@@ -1042,9 +1066,27 @@ F Log1pImpl(const F& x, const Env& env) {
       y = LogKernel(W(1) + wx, units, e, log_m);
       units += 5;
     }
+    if constexpr (kBase != 0) {
+      // The inverse logarithm is within 2 u, the product 1 u more.
+      const MathConstants<W>& c = GetMathConstants<W>();
+      y = y * (kBase == 2 ? c.inv_ln2 : c.inv_ln10);
+      units += 3;
+    }
     return RoundTranscendental(y, W::kPrecision - LostBits(units), last, env,
                                result);
   });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Log1pImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  F special;
+  if (Log1pSpecialCase(x, env, special)) return special;
+  // log(1 + x) = x - x^2/2 + ..., always below x.
+  if (x.raw_exponent() <= -(F::kPrecision + 3)) {
+    return RoundBeside(x, false, env);
+  }
+  return Log1pEvaluate<0, F, kFirstLevel>(x, env);
 }
 
 // --- Hyperbolic functions ---
@@ -2042,6 +2084,205 @@ F Atan2Impl(const F& y, const F& x, const Env& env) {
 
 
 
+// --- exp10, exp2m1, exp10m1, log2p1 and log10p1 ---
+
+// x log2(10) = k + f with |f| <= 1/2 or so: returns r = f ln 2, within 1.1 u
+// absolute. x log2_10_hi is exact, and so is its difference with k, both
+// being multiples of 2^-(kPrecision - 2) or more below 2^28.
+template <class W, class F>
+W ReduceByLog2Of10(const F& x, std::int64_t& k) {
+  const MathConstants<W>& c = GetMathConstants<W>();
+  const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
+  const W high = wx * c.log2_10_hi;
+  const W low = wx * c.log2_10_lo;
+  const W multiple = round(high + low);
+  k = to_integer<std::int64_t>(multiple, Rounding::kNearestEven);
+  const W f = multiple.is_zero() ? high + low : (high - multiple) + low;
+  return f * c.ln2;
+}
+
+// x log2(10), to check the thresholds of overflow and underflow.
+template <class F>
+Wide1<F> TimesLog2Of10(const F& x) {
+  const MathConstants<Wide1<F>>& c = GetMathConstants<Wide1<F>>();
+  return FloatAccess::Convert<Wide1<F>>(x, NearestEnv{}) *
+         (c.log2_10_hi + c.log2_10_lo);
+}
+
+// Rounds a value just above an exact v of the first working format.
+template <class F, class W, class Env>
+F RoundJustAbove(const W& v, const Env& env) {
+  return FloatAccess::Round<F>(v.signbit(), v.raw_exponent(),
+                               v.raw_limbs().data(), W::kLimbs, true, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Exp10Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F::Zero() : x;
+  if (x.is_zero()) return F(1);
+  // 10^x = 1 + x ln 10 + ..., with |x ln 10| < 2^-(P + 2).
+  if (x.raw_exponent() <= -(F::kPrecision + 5)) {
+    return RoundBeside(F(1), !x.signbit(), env);
+  }
+  const Wide1<F> t = TimesLog2Of10(x);
+  if (t >= Wide1<F>(F::kEmax + 2)) return RoundOverflow<F>(false, env);
+  if (t <= Wide1<F>(-(F::kEmax + F::kPrecision + 4))) {
+    return RoundTiny<F>(false, env);
+  }
+  // 10^n = 5^n 2^n for an integer n >= 0 is exact or a tie if 5^n has at
+  // most P + 1 bits, and otherwise as far from both as 10^x at other x.
+  if (!x.signbit() && IsInteger(x) && x <= F(F::kPrecision / 2 + 1)) {
+    const auto n = to_integer<std::int64_t>(x, Rounding::kTowardZero);
+    const BigUint power = BigUint::Pow5(static_cast<std::uint64_t>(n));
+    if (power.bit_length() <= static_cast<std::size_t>(F::kPrecision) + 1) {
+      return RoundInteger<F>(false, power, n, false, env);
+    }
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    std::int64_t k;
+    const W r = ReduceByLog2Of10<W>(x, k);
+    int units;
+    const W q = ExpM1Reduced<W, std::is_same_v<W, Wide1<F>>>(r, units);
+    const W y = scalbn(q + W(1), static_cast<int>(k));
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 4), last,
+                               env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Exp2m1Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F(-1) : x;
+  if (x.is_zero()) return x;
+  const Wide1<F> wide = FloatAccess::Convert<Wide1<F>>(x, NearestEnv{});
+  // 2^x - 1 >= 2^(kEmax + 1) for x > kEmax + 1, while at kEmax + 1 itself it
+  // is just below, which rounding decides.
+  if (wide > Wide1<F>(F::kEmax + 1)) return RoundOverflow<F>(false, env);
+  // Then 2^x < 2^-(P + 3), and 2^x - 1 is just above -1.
+  if (wide <= Wide1<F>(-(F::kPrecision + 3))) {
+    return RoundBeside(F(-1), true, env);
+  }
+  if (IsInteger(x)) {
+    // 2^n - 1 is exact in the working format up to n = P + 3, and rounds as
+    // just below 2^n beyond, with no rounding boundary between them.
+    const auto n = to_integer<std::int64_t>(x, Rounding::kTowardZero);
+    const Wide1<F> one(1);
+    const Wide1<F> power = scalbn(one, static_cast<int>(n));
+    if (n <= F::kPrecision + 3) {
+      return FloatAccess::Convert<F>(power - one, env);
+    }
+    return RoundJustBelow<F>(false, power, env);
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    const MathConstants<W>& c = GetMathConstants<W>();
+    const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
+    const W nearest = round(wx);
+    const auto k = to_integer<std::int64_t>(nearest, Rounding::kNearestEven);
+    // The difference is exact, and r is within 2 u.
+    const W r = (wx - nearest) * c.ln2;
+    int units;
+    W y = ExpM1Reduced<W, std::is_same_v<W, Wide1<F>>>(r, units);
+    if (k != 0) {
+      // |2^x| <= 3.5 |2^x - 1| for |x| >= 1/2.
+      y = scalbn(y + W(1), static_cast<int>(k)) - W(1);
+      units = 4 * units + 8;
+    }
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 4), last,
+                               env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Exp10m1Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F(-1) : x;
+  if (x.is_zero()) return x;
+  const Wide1<F> t = TimesLog2Of10(x);
+  if (t >= Wide1<F>(F::kEmax + 2)) return RoundOverflow<F>(false, env);
+  // Then 10^x < 2^-(P + 3), and 10^x - 1 is just above -1.
+  if (t <= Wide1<F>(-(F::kPrecision + 3))) {
+    return RoundBeside(F(-1), true, env);
+  }
+  if (!x.signbit() && IsInteger(x) && x <= F(F::kPrecision / 2 + 1)) {
+    // 10^n - 1 is exact or a tie if it has at most P + 1 bits. Beyond, if
+    // 10^n = 5^n 2^n has at most P + 1 bits itself, 10^n - 1 lies just below
+    // it, with no rounding boundary between them, which are 2 or more apart
+    // there. Otherwise 10^n - 1 rounds as 10^n, which is as far from a
+    // boundary as 10^x at other x.
+    const auto n = to_integer<std::int64_t>(x, Rounding::kTowardZero);
+    const BigUint power = BigUint::Pow5(static_cast<std::uint64_t>(n));
+    BigUint value = power;
+    value.ShiftLeft(static_cast<std::size_t>(n));
+    value.Sub(BigUint(1));
+    if (value.bit_length() <= static_cast<std::size_t>(F::kPrecision) + 1) {
+      return RoundInteger<F>(false, value, 0, false, env);
+    }
+    if (power.bit_length() <= static_cast<std::size_t>(F::kPrecision) + 1) {
+      return RoundJustBelow<F>(
+          false,
+          RoundInteger<Wide1<F>>(false, power, n, false,
+                                 SilentEnv{Rounding::kNearestEven}),
+          env);
+    }
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    std::int64_t k;
+    const W r = ReduceByLog2Of10<W>(x, k);
+    int units;
+    W y = ExpM1Reduced<W, std::is_same_v<W, Wide1<F>>>(r, units);
+    if (k != 0) {
+      // |10^x| <= 3.5 |10^x - 1| for |x log2(10)| >= 1/2.
+      y = scalbn(y + W(1), static_cast<int>(k)) - W(1);
+      units = 4 * units + 8;
+    }
+    return RoundTranscendental(y, W::kPrecision - LostBits(units + 4), last,
+                               env, result);
+  });
+}
+
+// log2(1 + x) and log10(1 + x). They are exact where 1 + x is a power of the
+// base, and for x a power of the base above 2^(P + 4), just above its
+// logarithm, an integer n, by less than any working format resolves:
+// log(1 + x) - log x < 2^-(P + 4) / ln 2, while rounding boundaries lie
+// n 2^-(P + 1) or more apart there.
+template <int kBase, class F, class Env, int kFirstLevel = 1>
+F LogPlus1Impl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  F special;
+  if (Log1pSpecialCase(x, env, special)) return special;
+  using W1 = Wide1<F>;
+  std::int64_t n;
+  // 1 + x is a power of the base only for x >= -1/2, from where it is exact
+  // below 2^P.
+  if (x.raw_exponent() >= -1 && x.raw_exponent() < F::kPrecision) {
+    const W1 z = W1(1) + FloatAccess::Convert<W1>(x, NearestEnv{});
+    if constexpr (kBase == 2) {
+      if (SignificantBits(z) == 1) {
+        return FloatAccess::Convert<F>(std::int64_t{z.raw_exponent()}, env);
+      }
+    } else {
+      if (IsPowerOfTen(z, n)) return FloatAccess::Convert<F>(n, env);
+    }
+  } else if (x.raw_exponent() >= F::kPrecision + 4) {
+    bool power = false;
+    if constexpr (kBase == 2) {
+      power = SignificantBits(x) == 1;
+      n = x.raw_exponent();
+    } else {
+      power = IsPowerOfTen(x, n);
+    }
+    if (power) return RoundJustAbove<F>(W1(static_cast<double>(n)), env);
+  }
+  return Log1pEvaluate<kBase, F, kFirstLevel>(x, env);
+}
+
 // --- Powers and roots ---
 
 // The exact x^2 + y^2 always fits: the exponents differ by at most P + 2.
@@ -2505,6 +2746,57 @@ F pi() {
 template <class F>
 F pi(Context& context) {
   return detail::PiImpl<F>(detail::ContextEnv{context});
+}
+
+// 10^x, exact for 10^n that F holds.
+template <int P, int E>
+Float<P, E> exp10(const Float<P, E>& x) {
+  return detail::Exp10Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> exp10(const Float<P, E>& x, Context& context) {
+  return detail::Exp10Impl(x, detail::ContextEnv{context});
+}
+
+// 2^x - 1, accurate for small x.
+template <int P, int E>
+Float<P, E> exp2m1(const Float<P, E>& x) {
+  return detail::Exp2m1Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> exp2m1(const Float<P, E>& x, Context& context) {
+  return detail::Exp2m1Impl(x, detail::ContextEnv{context});
+}
+
+// 10^x - 1, accurate for small x.
+template <int P, int E>
+Float<P, E> exp10m1(const Float<P, E>& x) {
+  return detail::Exp10m1Impl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> exp10m1(const Float<P, E>& x, Context& context) {
+  return detail::Exp10m1Impl(x, detail::ContextEnv{context});
+}
+
+// log2(1 + x), accurate for small x. log2p1(-1) is -infinity and raises divide
+// by zero, and x < -1 gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> log2p1(const Float<P, E>& x) {
+  return detail::LogPlus1Impl<2>(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> log2p1(const Float<P, E>& x, Context& context) {
+  return detail::LogPlus1Impl<2>(x, detail::ContextEnv{context});
+}
+
+// log10(1 + x), accurate for small x, with the special cases of log2p1.
+template <int P, int E>
+Float<P, E> log10p1(const Float<P, E>& x) {
+  return detail::LogPlus1Impl<10>(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> log10p1(const Float<P, E>& x, Context& context) {
+  return detail::LogPlus1Impl<10>(x, detail::ContextEnv{context});
 }
 
 // The inverse tangent, in (-pi/2, pi/2); atan(+-infinity) is +-pi/2 rounded.

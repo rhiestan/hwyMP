@@ -258,6 +258,44 @@ TEST(Math, InverseTrigonometric) {
   }
 }
 
+TEST(Math, C23ExponentialsAndLogarithms) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  Context context;
+  EXPECT_TRUE(exp10(F(3), context) == F(1000));
+  EXPECT_TRUE(exp2m1(F(10), context) == F(1023));
+  EXPECT_TRUE(exp2m1(F(-2), context) == F(-0.75));
+  EXPECT_TRUE(exp10m1(F(2), context) == F(99));
+  EXPECT_TRUE(log2p1(F(7), context) == F(3));
+  EXPECT_TRUE(log2p1(F(-0.75), context) == F(-2));
+  EXPECT_TRUE(log10p1(F(999), context) == F(3));
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(SameBits(exp10(-inf), F::Zero()));
+  EXPECT_TRUE(SameBits(exp2m1(-inf), F(-1)));
+  EXPECT_TRUE(SameBits(exp10m1(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(log2p1(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(log10p1(inf), inf));
+  EXPECT_TRUE(SameBits(log2p1(F(-1), context), -inf));
+  EXPECT_EQ(context.flags, unsigned{kFlagDivByZero});
+  context = Context{};
+  EXPECT_TRUE(log10p1(F(-2), context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  // log2(1 + 2^200) is just above 200.
+  context = Context{Rounding::kUp};
+  EXPECT_TRUE(SameBits(log2p1(scalbn(F(1), 200), context), next_up(F(200))));
+  for (const double x : {-30.0, -2.5, -0.3, -1e-5, 1e-20, 0.25, 0.75, 5.5}) {
+    EXPECT_NEAR(static_cast<double>(exp10(F(x))), std::pow(10.0, x),
+                std::pow(10.0, x) * 1e-15);
+    const double expected = std::expm1(x * 0.6931471805599453);
+    EXPECT_NEAR(static_cast<double>(exp2m1(F(x))), expected,
+                std::abs(expected) * 1e-14);
+    if (x > -1) {
+      EXPECT_NEAR(static_cast<double>(log2p1(F(x))), std::log1p(x) / std::log(2),
+                  std::abs(std::log1p(x)) * 1e-14);
+    }
+  }
+}
+
 TEST(Math, Pi) {
   EXPECT_EQ(to_string(pi<binary256>()),
             to_string(from_string<binary256>(

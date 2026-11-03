@@ -37,7 +37,8 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    since Eigen clears trivially copyable scalars with memset.
 6. Elementary functions, correctly rounded in all modes with flags, in
    `mpfix/math.h`. Done: exp, exp2, expm1, log, log2, log10, log1p, 1.7 to 8
-   times faster than MPFR; sinh, cosh and tanh, 1.6 to 2.7 times; asinh,
+   times faster than MPFR; C23's exp10, exp2m1, exp10m1, log2p1 and log10p1,
+   4 to 25 times; sinh, cosh and tanh, 1.6 to 2.7 times; asinh,
    acosh and atanh, 2 to 10 times; sin, cos and tan, with exact reduction of
    any argument, 1.2 to 2.8 times; pow, 2 to 3.8 times; hypot, 1.3 to 2.9
    times; asin, acos, atan and atan2, 5 to 10 times; cbrt, level with MPFR
