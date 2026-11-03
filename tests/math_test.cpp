@@ -296,6 +296,56 @@ TEST(Math, C23ExponentialsAndLogarithms) {
   }
 }
 
+TEST(Math, ErrorAndGammaFunctions) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  EXPECT_TRUE(SameBits(erf(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(erf(-inf), F(-1)));
+  EXPECT_TRUE(SameBits(erfc(-inf), F(2)));
+  EXPECT_TRUE(SameBits(erfc(inf), F::Zero()));
+  EXPECT_TRUE(SameBits(lgamma(F(1)), F::Zero()));
+  EXPECT_TRUE(SameBits(lgamma(-inf), inf));
+  EXPECT_TRUE(SameBits(tgamma(inf), inf));
+
+  Context context;
+  EXPECT_TRUE(tgamma(F(5), context) == F(24));
+  EXPECT_TRUE(tgamma(F(21), context) == F(2432902008176640000.0));
+  EXPECT_TRUE(lgamma(F(2), context) == F::Zero());
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(SameBits(tgamma(F::Zero(true), context), -inf));
+  EXPECT_TRUE(SameBits(lgamma(F(-3), context), inf));
+  EXPECT_EQ(context.flags, unsigned{kFlagDivByZero});
+  context = Context{};
+  EXPECT_TRUE(tgamma(F(-3), context).is_nan());
+  EXPECT_TRUE(tgamma(-inf, context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{};
+  EXPECT_TRUE(tgamma(F(2000), context).is_inf());
+  EXPECT_EQ(context.flags, unsigned{kFlagOverflow | kFlagInexact});
+  // erf saturates just below 1, and erfc underflows.
+  context = Context{Rounding::kTowardZero};
+  EXPECT_TRUE(SameBits(erf(F(20), context), next_down(F(1))));
+  EXPECT_TRUE(SameBits(erfc(F(200), context), F::Zero()));
+  EXPECT_EQ(context.flags, unsigned{kFlagUnderflow | kFlagInexact});
+
+  for (const double x : {-0.7, 1e-10, 0.3, 1.0, 2.5, 5.0}) {
+    EXPECT_NEAR(static_cast<double>(erf(F(x))), std::erf(x),
+                std::abs(std::erf(x)) * 1e-15)
+        << x;
+    EXPECT_NEAR(static_cast<double>(erfc(F(x))), std::erfc(x),
+                std::erfc(x) * 1e-15)
+        << x;
+  }
+  for (const double x : {-3.5, -0.5, 1e-10, 0.25, 1.5, 7.0, 30.5, 170.0}) {
+    EXPECT_NEAR(static_cast<double>(tgamma(F(x))), std::tgamma(x),
+                std::abs(std::tgamma(x)) * 1e-14)
+        << x;
+    EXPECT_NEAR(static_cast<double>(lgamma(F(x))), std::lgamma(x),
+                std::abs(std::lgamma(x)) * 1e-14 + 1e-16)
+        << x;
+  }
+}
+
 TEST(Math, Pi) {
   EXPECT_EQ(to_string(pi<binary256>()),
             to_string(from_string<binary256>(

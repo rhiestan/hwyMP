@@ -242,6 +242,29 @@ of atan at multiples of 2^-7 and 2^-14 leave t below 2^-15, whose series in
 t^2 runs in fixed point. Their tables take 0.25 ms at binary128 and 2 ms at
 binary512 on the first call.
 
+### Error and gamma functions
+
+The same benchmark, with arguments in (-20, 20).
+
+| Format | Library | erf | erfc | tgamma | lgamma |
+|---|---|---:|---:|---:|---:|
+| binary128 | mpfix | 2390 | 3737 | 3379 | 4197 |
+| | MPFR | 10827 | 44325 | 15791 | 15476 |
+| binary256 | mpfix | 6341 | 9472 | 7427 | 9172 |
+| | MPFR | 26257 | 85608 | 27752 | 27273 |
+| binary512 | mpfix | 25085 | 35817 | 28973 | 35168 |
+| | MPFR | 81382 | 182547 | 63952 | 62975 |
+
+erf sums e^-(x^2) times a series of positive terms below 1, and is 1 - erfc
+above. erfc takes e^(x^2) erfc x from a table at multiples of 1/16, built
+from the asymptotic series downwards, and a Taylor series whose coefficients
+follow from its differential equation; above, the asymptotic series alone.
+The first erfc builds the table: 0.9 ms at binary128, 10 ms at binary512.
+lgamma and tgamma use Stirling's series from x = P/4, with coefficients from
+the tangent numbers, shifting smaller arguments up and reflecting negative
+ones. Their errors are tracked as they go, so that the cancellation near the
+zeros of lgamma passes the result to a wider working format.
+
 ### Powers and roots
 
 The same benchmark. pow takes x as for log and y as for exp; cbrt takes values

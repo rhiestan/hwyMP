@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Single-threaded throughput of the exponentials, logarithms, hyperbolic and
-// trigonometric functions and their inverses, powers and roots, on identical
-// arguments for every library, all rounding to nearest. Exponentials, sinh,
-// cosh, tanh, asinh, sin, cos, tan and atan take arguments in (-20, 20);
-// logarithms and cbrt take positive values with binary exponents in
-// [-20, 20), and acosh one plus those; expm1, exp2m1, exp10m1, log1p, log2p1
-// and log10p1 take arguments below 1/4 in magnitude, and atanh, asin and acos
-// below 1; pow takes x as for log and y as for exp. MPFR runs at the format's
-// precision; Boost.Multiprecision's cpp_bin_float is timed for exp, log, the
-// hyperbolic and trigonometric functions and their inverses, and pow only.
+// trigonometric functions and their inverses, the error and gamma functions,
+// powers and roots, on identical arguments for every library, all rounding to
+// nearest. Exponentials, sinh, cosh, tanh, asinh, sin, cos, tan, atan, erf,
+// erfc, tgamma and lgamma take arguments in (-20, 20); logarithms and cbrt
+// take positive values with binary exponents in [-20, 20), and acosh one plus
+// those; expm1, exp2m1, exp10m1, log1p, log2p1 and log10p1 take arguments
+// below 1/4 in magnitude, and atanh, asin and acos below 1; pow takes x as for
+// log and y as for exp. MPFR runs at the format's precision;
+// Boost.Multiprecision's cpp_bin_float is timed for exp, log, the hyperbolic
+// and trigonometric functions and their inverses, and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -181,6 +182,18 @@ void ReportFormat(const char* format) {
        mpfr_acos, [](const Boost& x) { return Boost(acos(x)); }},
       {"atan", Range::kExp, [](const F& x) { return mpfix::atan(x); },
        mpfr_atan, [](const Boost& x) { return Boost(atan(x)); }},
+      {"erf", Range::kExp, [](const F& x) { return mpfix::erf(x); }, mpfr_erf,
+       nullptr},
+      {"erfc", Range::kExp, [](const F& x) { return mpfix::erfc(x); },
+       mpfr_erfc, nullptr},
+      {"tgamma", Range::kExp, [](const F& x) { return mpfix::tgamma(x); },
+       mpfr_gamma, nullptr},
+      {"lgamma", Range::kExp, [](const F& x) { return mpfix::lgamma(x); },
+       [](mpfr_ptr r, mpfr_srcptr x, mpfr_rnd_t rnd) {
+         int sign;
+         return mpfr_lgamma(r, &sign, x, rnd);
+       },
+       nullptr},
       {"cbrt", Range::kLog, [](const F& x) { return mpfix::cbrt(x); },
        mpfr_cbrt, nullptr},
   };

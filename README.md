@@ -26,10 +26,11 @@ std::cout << std::setprecision(40) << y << '\n';
 `mpfix/math.h` adds `exp`, `exp2`, `exp10`, `expm1`, `exp2m1`, `exp10m1`,
 `log`, `log2`, `log10`, `log1p`, `log2p1`, `log10p1`, `sinh`, `cosh`, `tanh`,
 `asinh`, `acosh`, `atanh`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
-`atan2`, `pow`, `cbrt` and `hypot`, and the constant `pi<F>()`, correctly
-rounded in every mode, with an optional `Context` for the mode and flags. Exact results, such as `pow(9, 1.5)`, raise no flags. The
-trigonometric functions reduce any argument exactly, as if with infinitely
-many digits of pi:
+`atan2`, `pow`, `cbrt`, `hypot`, `erf`, `erfc`, `tgamma` and `lgamma`, and the
+constant `pi<F>()`, correctly rounded in every mode, with an optional
+`Context` for the mode and flags. Exact results, such as `pow(9, 1.5)`, raise
+no flags. The trigonometric functions reduce any argument exactly, as if with
+infinitely many digits of pi:
 
 ```cpp
 #include "mpfix/math.h"

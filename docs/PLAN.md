@@ -41,10 +41,30 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    4 to 25 times; sinh, cosh and tanh, 1.6 to 2.7 times; asinh,
    acosh and atanh, 2 to 10 times; sin, cos and tan, with exact reduction of
    any argument, 1.2 to 2.8 times; pow, 2 to 3.8 times; hypot, 1.3 to 2.9
-   times; asin, acos, atan and atan2, 5 to 10 times; cbrt, level with MPFR
-   at binary512 and faster below; and pi. Done.
-7. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
-   AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through
-   Intel SDE.
+   times; asin, acos, atan and atan2, 5 to 10 times; erf and erfc, 3 to 12
+   times; tgamma and lgamma, 1.8 to 4.7 times; cbrt, level with MPFR at
+   binary512 and faster below; and pi. Done.
+7. Complex numbers. `std::complex<T>` is unspecified for T other than float,
+   double and long double, and the standard libraries differ: libstdc++ (GCC
+   16) works at full precision, finding mpfix's functions by
+   argument-dependent lookup; MSVC's STL deprecates it (STL4037), fails to
+   compile `std::log` because `numeric_limits<Float>::epsilon()` is not
+   constexpr, and its generic code converts to double for exp, cos, sinh,
+   atan2, isinf and signbit, silently losing precision; libc++ is untested.
+   Plan: `mpfix/complex.h` with a complex type of mpfix's own, whose
+   arithmetic divides with scaling and whose functions (abs, arg, norm, conj,
+   proj, polar, sqrt, exp, log, log10, pow, the trigonometric and hyperbolic
+   functions and their inverses) build on the correctly rounded real ones,
+   with C99 Annex G's special values; abs and arg are then correctly rounded,
+   the others accurate to about an ulp per component, tested against MPC.
+   Also: constexpr numeric_limits members, documenting what std::complex
+   gives on each library, and how Eigen's complex matrices, written for
+   std::complex, can use either.
 8. Hardening and release: long differential runs, TestFloat, sanitizers,
    fuzzing, and a benchmark report.
+
+## Postponed
+
+- Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
+  AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through
+  Intel SDE. Waiting for access to AVX-512 hardware.

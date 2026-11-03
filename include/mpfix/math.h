@@ -4,8 +4,9 @@
 // Exponentials, logarithms, hyperbolic and trigonometric functions, powers and
 // roots: exp, exp2, exp10, expm1, exp2m1, exp10m1, log, log2, log10, log1p,
 // log2p1, log10p1, sinh, cosh, tanh, asinh, acosh, atanh, sin, cos, tan, asin,
-// acos, atan, atan2, pow, cbrt and hypot, and the constant pi, correctly
-// rounded in all five modes, with the IEEE 754 flags when a Context is given.
+// acos, atan, atan2, pow, cbrt and hypot, the error and gamma functions erf,
+// erfc, tgamma and lgamma, and the constant pi, correctly rounded in all five
+// modes, with the IEEE 754 flags when a Context is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -34,6 +35,7 @@
 #include <cstdint>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "mpfix/bigint.h"
 #include "mpfix/charconv.h"
@@ -1566,7 +1568,11 @@ Tracked<W> TrackedAdd(const Tracked<W>& a, const Tracked<W>& b) {
   if (a.value.is_zero()) return b;
   if (b.value.is_zero()) return a;
   const W sum = a.value + b.value;
-  if (sum.is_zero()) return {sum, 0};  // Only for exactly opposite terms.
+  // Exactly opposite terms: exact if they are, and otherwise of unknown
+  // relative error.
+  if (sum.is_zero()) {
+    return {sum, a.units == 0 && b.units == 0 ? 0 : 1e300};
+  }
   const int es = sum.raw_exponent();
   // The computed sum is within 1 u of the exact one, hence the factor.
   return {sum, (std::ldexp(a.units, a.value.raw_exponent() + 1 - es) +
@@ -2283,6 +2289,632 @@ F LogPlus1Impl(const F& x, const Env& env) {
   return Log1pEvaluate<kBase, F, kFirstLevel>(x, env);
 }
 
+// --- erf, erfc, tgamma and lgamma ---
+
+// Rounds a tracked value, or declines if its error bound is too large to say
+// anything, unless `last` is set.
+template <class F, class W, class Env>
+bool RoundTracked(const Tracked<W>& v, bool last, const Env& env, F& result) {
+  constexpr double kHuge = 1152921504606846976.0;  // 2^60.
+  if (!(v.units < kHuge) && !last) return false;
+  const double units = v.units < kHuge ? v.units : kHuge;
+  return RoundTranscendental(v.value,
+                             W::kPrecision - LostBitsWide(CeilUnits(units)),
+                             last, env, result);
+}
+
+// pi, sqrt(pi), 2 / sqrt(pi), log(pi) and log(2 pi) / 2 in a working format,
+// with their error bounds.
+template <class W>
+struct SpecialConstants {
+  Tracked<W> pi;
+  Tracked<W> sqrt_pi;
+  Tracked<W> two_over_sqrt_pi;
+  Tracked<W> log_pi;
+  Tracked<W> half_log_2pi;
+
+  SpecialConstants() {
+    const W pi_w = scalbn(GetTrigConstants<W>().half_pi, 1);
+    pi = {pi_w, 1};
+    const W root = sqrt(pi_w);
+    sqrt_pi = {root, 1.5};
+    two_over_sqrt_pi = {W(2) / root, 2.5};
+    int units;
+    std::int64_t e;
+    W log_m;
+    // An error of 1 u in pi is one below 1 u in log(pi) >= 1.1.
+    const W log_pi_w = LogKernel<W>(pi_w, units, e, log_m);
+    log_pi = {log_pi_w, units + 1.0};
+    const W log_2pi = LogKernel<W>(scalbn(pi_w, 1), units, e, log_m);
+    half_log_2pi = {scalbn(log_2pi, -1), units + 1.0};
+  }
+};
+
+template <class W>
+const SpecialConstants<W>& GetSpecialConstants() {
+  static const SpecialConstants<W> constants;
+  return constants;
+}
+
+// The tangent numbers T_1 .. T_n, exactly, by Brent and Harvey's recurrence:
+// 1, 2, 16, 272, ...
+inline std::vector<BigUint> TangentNumbers(int n) {
+  std::vector<BigUint> t(static_cast<std::size_t>(n) + 1);
+  t[1] = BigUint(1);
+  for (int k = 2; k <= n; ++k) {
+    t[static_cast<std::size_t>(k)] = t[static_cast<std::size_t>(k - 1)];
+    t[static_cast<std::size_t>(k)].MulAdd(static_cast<limb_t>(k - 1), 0);
+  }
+  for (int k = 2; k <= n; ++k) {
+    for (int j = k; j <= n; ++j) {
+      // T_j = (j - k) T_(j-1) + (j - k + 2) T_j.
+      BigUint previous = t[static_cast<std::size_t>(j - 1)];
+      previous.MulAdd(static_cast<limb_t>(j - k), 0);
+      t[static_cast<std::size_t>(j)].MulAdd(static_cast<limb_t>(j - k + 2), 0);
+      t[static_cast<std::size_t>(j)].Add(previous);
+    }
+  }
+  return t;
+}
+
+// The coefficients of Stirling's series, c_k = B_2k / (2k (2k - 1)) =
+// (-1)^(k-1) T_k / ((2k - 1) 4^k (4^k - 1)) for k = 1 .. kCount, within 3 u.
+// kCount suffices for x >= kPrecision / 4.
+template <class W>
+struct StirlingCoefficients {
+  static constexpr int kCount = W::kPrecision / 6 + 8;
+  std::array<W, kCount + 1> c;
+
+  StirlingCoefficients() {
+    const std::vector<BigUint> t = TangentNumbers(kCount);
+    const SilentEnv nearest{Rounding::kNearestEven};
+    for (int k = 1; k <= kCount; ++k) {
+      BigUint d(1);
+      d.ShiftLeft(static_cast<std::size_t>(2 * k));
+      d.Sub(BigUint(1));
+      d.MulAdd(static_cast<limb_t>(2 * k - 1), 0);
+      const W value =
+          scalbn(RoundInteger<W>(false, t[static_cast<std::size_t>(k)], 0,
+                                 false, nearest) /
+                     RoundInteger<W>(false, d, 0, false, nearest),
+                 -2 * k);
+      c[static_cast<std::size_t>(k)] = (k & 1) != 0 ? value : -value;
+    }
+  }
+};
+
+template <class W>
+const StirlingCoefficients<W>& GetStirlingCoefficients() {
+  static const StirlingCoefficients<W> coefficients;
+  return coefficients;
+}
+
+// Stirling's series starts at x = kPrecision / 4.
+template <class W>
+constexpr int kStirlingStart = W::kPrecision / 4;
+
+// log Gamma(x) for x >= kStirlingStart, by Stirling's series:
+// (x - 1/2) log x - x + log(2 pi)/2 + sum over k of c_k / x^(2k - 1), whose
+// remainder is below its first omitted term. x is known within x.units.
+template <class W>
+Tracked<W> LgammaStirling(const Tracked<W>& x) {
+  const SpecialConstants<W>& sc = GetSpecialConstants<W>();
+  const StirlingCoefficients<W>& st = GetStirlingCoefficients<W>();
+  const W one(1);
+  int log_units;
+  std::int64_t e;
+  W log_m;
+  // A relative error d of x is an absolute one of d in log x, which is at
+  // least 2.
+  const Tracked<W> log_x{LogKernel<W>(x.value, log_units, e, log_m),
+                         log_units + x.units};
+  const Tracked<W> x_minus_half{x.value - W(0.5), 1.02 * x.units + 1};
+  Tracked<W> sum = TrackedAdd(TrackedMul(x_minus_half, log_x),
+                              Tracked<W>{-x.value, x.units});
+  sum = TrackedAdd(sum, sc.half_log_2pi);
+  // The series in y = 1/x, by Horner's rule from the first term too small to
+  // matter, whose bound is then added.
+  const W y = one / x.value;
+  const W y2 = y * y;
+  const int sum_exponent = sum.value.raw_exponent();
+  int count = StirlingCoefficients<W>::kCount;
+  bool converged = false;
+  for (int k = 1; k <= StirlingCoefficients<W>::kCount; ++k) {
+    const std::int64_t term_exponent =
+        std::int64_t{st.c[static_cast<std::size_t>(k)].raw_exponent()} + 1 +
+        std::int64_t{2 * k - 1} * (y.raw_exponent() + 1);
+    if (term_exponent < sum_exponent - W::kPrecision - 8) {
+      count = k - 1;
+      converged = true;
+      break;
+    }
+  }
+  if (count > 0) {
+    W series = st.c[static_cast<std::size_t>(count)];
+    for (int k = count - 1; k >= 1; --k) {
+      series = st.c[static_cast<std::size_t>(k)] + y2 * series;
+    }
+    series = y * series;
+    // Its first term dominates, the others alternate below it.
+    sum = TrackedAdd(sum, Tracked<W>{series, 3.0 * count + 6 +
+                                                 2.0 * count * x.units});
+  }
+  // From kStirlingStart on, the series always reaches a small enough term.
+  sum.units += converged ? 0.01 : 1e30;
+  return sum;
+}
+
+// log Gamma(x) for x > 0 known within x.units: through Stirling's series at
+// z = x + m >= kStirlingStart, less log(x (x + 1) ... (x + m - 1)). The
+// subtraction cancels near x = 1 and 2, where the error bound grows.
+template <class W>
+Tracked<W> LgammaPositive(const Tracked<W>& x) {
+  constexpr int kStart = kStirlingStart<W>;
+  if (x.value >= W(kStart)) return LgammaStirling(x);
+  const int m = kStart - to_integer<int>(x.value, Rounding::kTowardZero);
+  const Tracked<W> z{x.value + W(m), x.units + 1};
+  Tracked<W> product = x;
+  for (int i = 1; i < m; ++i) {
+    product = TrackedMul(product, Tracked<W>{x.value + W(i), x.units + 1});
+  }
+  int log_units;
+  std::int64_t e;
+  W log_m;
+  const W log_product = LogKernel<W>(product.value, log_units, e, log_m);
+  // A relative error d of the product is an absolute one of d in its
+  // logarithm, here relative to a logarithm of at least log(2).
+  const Tracked<W> minus_log{
+      -log_product,
+      std::ldexp(log_units + product.units,
+                 (std::max)(0, -log_product.raw_exponent()))};
+  return TrackedAdd(LgammaStirling(z), minus_log);
+}
+
+// |sin(pi x)| for an exact non-integer x, and whether sin(pi x) < 0: x is
+// reduced exactly to a in (0, 1/2], and sin(pi a) or cos(pi (1/2 - a)) taken
+// from the kernel on pi a, within 2 u.
+template <class W, bool kUseTables>
+Tracked<W> SinPiMagnitude(const W& x, bool& negative) {
+  const W two(2);
+  const W multiple = scalbn(round(scalbn(x, -1)), 1);
+  const W r = x - multiple;  // In (-1, 1), exact.
+  negative = r.signbit();
+  W a = abs(r);
+  const W half(0.5);
+  if (a > half) a = W(1) - a;
+  const W pi = GetSpecialConstants<W>().pi.value;
+  W s;
+  W c;
+  double s_units;
+  double c_units;
+  if (a <= W(0.25)) {
+    SinCosReduced<W, kUseTables>(pi * a, s, c, s_units, c_units);
+    return {s, s_units + 2};
+  }
+  SinCosReduced<W, kUseTables>(pi * (half - a), s, c, s_units, c_units);
+  return {c, c_units + 2};
+}
+
+// log |Gamma(x)| for an exact non-integer x, or x > 0.
+template <class W, bool kUseTables>
+Tracked<W> LgammaAny(const W& x) {
+  if (!x.signbit()) return LgammaPositive(Tracked<W>{x, 0});
+  // log |Gamma(x)| = log(pi) - log |sin(pi x)| - log Gamma(1 - x).
+  bool negative;
+  const Tracked<W> sine = SinPiMagnitude<W, kUseTables>(x, negative);
+  int log_units;
+  std::int64_t e;
+  W log_m;
+  const W log_sine = LogKernel<W>(sine.value, log_units, e, log_m);
+  const Tracked<W> minus_log_sine{
+      -log_sine, std::ldexp(log_units + sine.units,
+                            (std::max)(0, -log_sine.raw_exponent()))};
+  const Tracked<W> lgamma_reflected =
+      LgammaPositive(Tracked<W>{W(1) - x, 1});
+  return TrackedAdd(
+      TrackedAdd(GetSpecialConstants<W>().log_pi, minus_log_sine),
+      Tracked<W>{-lgamma_reflected.value, lgamma_reflected.units});
+}
+
+// e^t for a tracked t with |t| < 2^30: its absolute error |t| t.units u is a
+// relative one in e^t.
+template <class W, bool kUseTables>
+Tracked<W> ExpOfTracked(const Tracked<W>& t) {
+  std::int64_t k;
+  const W r = ReduceByLn2<W>(t.value, k);
+  int units;
+  const W q = ExpM1Reduced<W, kUseTables>(r, units);
+  const double inherited =
+      t.value.is_zero() ? 0 : std::ldexp(t.units, t.value.raw_exponent() + 1);
+  return {scalbn(q + W(1), static_cast<int>(k)), units + 4 + inherited};
+}
+
+// Gamma(x) for x > 0 known within x.units: e^(log Gamma(z)) / (x (x + 1) ...
+// (x + m - 1)) for z = x + m >= kStirlingStart, with no cancellation.
+template <class W, bool kUseTables>
+Tracked<W> GammaPositive(const Tracked<W>& x) {
+  constexpr int kStart = kStirlingStart<W>;
+  if (x.value >= W(kStart)) {
+    return ExpOfTracked<W, kUseTables>(LgammaStirling(x));
+  }
+  const int m = kStart - to_integer<int>(x.value, Rounding::kTowardZero);
+  const Tracked<W> z{x.value + W(m), x.units + 1};
+  Tracked<W> product = x;
+  for (int i = 1; i < m; ++i) {
+    product = TrackedMul(product, Tracked<W>{x.value + W(i), x.units + 1});
+  }
+  const Tracked<W> power = ExpOfTracked<W, kUseTables>(LgammaStirling(z));
+  return {power.value / product.value, power.units + product.units + 1};
+}
+
+// The largest x with Gamma(x) below 2^(kEmax + 1), from double arithmetic,
+// a little too large; above it, tgamma overflows.
+template <class F>
+double GammaOverflowThreshold() {
+  static const double threshold = [] {
+    const double target = (F::kEmax + 1.0) * 0.69314718055994531;
+    double low = 1;
+    double high = 2;
+    while (std::lgamma(high) < target) high *= 2;
+    for (int i = 0; i < 200; ++i) {
+      const double middle = 0.5 * (low + high);
+      (std::lgamma(middle) < target ? low : high) = middle;
+    }
+    return high * (1 + 1e-12) + 1e-9;
+  }();
+  return threshold;
+}
+
+// Rounds Gamma(x) for 0 < |x| < 2^-(2P + 8), where Gamma(x) = 1/x - gamma +
+// O(x) lies within |x| of 1/x, relatively, while 1/x is exact or more than
+// 2^-(2P + 2) from any other number of P + 2 bits: so Gamma(x) rounds as just
+// beside 1/x, towards zero.
+template <class F, class Env>
+F GammaOfTiny(const F& x, const Env& env) {
+  using Q = Float<F::kPrecision + 2, 29>;
+  Context context{Rounding::kTowardZero};
+  const Q q = div(Q(1), abs(FloatAccess::Convert<Q>(x, NearestEnv{})), context);
+  const bool negative = x.signbit();
+  if ((context.flags & kFlagInexact) != 0) {
+    return FloatAccess::Round<F>(negative, q.raw_exponent(),
+                                 q.raw_limbs().data(), Q::kLimbs, true, env);
+  }
+  const Wide1<F> exact = FloatAccess::Convert<Wide1<F>>(q, NearestEnv{});
+  // For x > 0, Gamma(x) < 1/x; for x < 0, |Gamma(x)| > |1/x|.
+  return negative ? RoundJustAbove<F>(-exact, env)
+                  : RoundJustBelow<F>(false, exact, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F TgammaImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) {
+    env.raise(kFlagDivByZero);
+    return F::Infinity(x.signbit());
+  }
+  if (x.is_inf()) return x.signbit() ? InvalidResult<F>(env) : x;
+  const bool integer = IsInteger(x);
+  if (x.signbit() && integer) return InvalidResult<F>(env);
+  if (!x.signbit() && static_cast<double>(x) > GammaOverflowThreshold<F>()) {
+    return RoundOverflow<F>(false, env);
+  }
+  if (x.raw_exponent() < -(2 * F::kPrecision + 8)) return GammaOfTiny(x, env);
+  // Gamma(n) = (n - 1)!, exactly.
+  if (integer && x <= F(3000)) {
+    const auto n = to_integer<std::int64_t>(x, Rounding::kTowardZero);
+    BigUint factorial(1);
+    for (std::int64_t i = 2; i < n; ++i) {
+      factorial.MulAdd(static_cast<limb_t>(i), 0);
+    }
+    return RoundInteger<F>(false, factorial, 0, false, env);
+  }
+  // For x < 0, |Gamma(x)| <= pi / (|sin(pi x)| Gamma(1 - x)), where
+  // |sin(pi x)| >= 2^(e - P + 2) for x of exponent e; far enough left, it is
+  // below a quarter of the smallest subnormal.
+  if (x.signbit()) {
+    const double log2_bound =
+        F::kPrecision + 2 - x.raw_exponent() -
+        std::lgamma(1 - static_cast<double>(x)) * 1.4426950408889634;
+    if (log2_bound < F::kEmin - F::kPrecision - 8) {
+      // The sign of Gamma(x) is that of sin(pi x): negative for an odd
+      // floor(x).
+      const F floor_x = floor(x);
+      const bool odd = !IsInteger(scalbn(floor_x, -1));
+      return RoundTiny<F>(odd, env);
+    }
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
+    const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
+    Tracked<W> value;
+    bool negative = false;
+    if (!x.signbit()) {
+      value = GammaPositive<W, kFirst>(Tracked<W>{wx, 0});
+    } else {
+      // Gamma(x) = pi / (sin(pi x) Gamma(1 - x)).
+      const Tracked<W> sine = SinPiMagnitude<W, kFirst>(wx, negative);
+      const Tracked<W> reflected =
+          GammaPositive<W, kFirst>(Tracked<W>{W(1) - wx, 1});
+      const Tracked<W> pi = GetSpecialConstants<W>().pi;
+      value = {pi.value / (sine.value * reflected.value),
+               pi.units + sine.units + reflected.units + 2};
+    }
+    if (negative) value.value = -value.value;
+    return RoundTracked(value, last, env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F LgammaImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return F::Infinity();
+  if (x.is_zero() || (x.signbit() && IsInteger(x))) {
+    env.raise(kFlagDivByZero);
+    return F::Infinity();
+  }
+  if (x == F(1) || x == F(2)) return F::Zero();
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
+    return RoundTracked(
+        LgammaAny<W, kFirst>(FloatAccess::Convert<W>(x, NearestEnv{})), last,
+        env, result);
+  });
+}
+
+// e^-(x^2) for a finite x: x^2 = hi + lo exactly, e^-hi from the
+// exponential's kernel, and e^-lo = 1 - lo to within lo^2.
+template <class W, bool kUseTables>
+Tracked<W> ExpMinusSquare(const W& x) {
+  const W hi = x * x;
+  const W lo = fma(x, x, -hi);
+  std::int64_t k;
+  const W r = ReduceByLn2<W>(-hi, k);
+  int units;
+  const W q = ExpM1Reduced<W, kUseTables>(r, units);
+  W y = scalbn(q + W(1), static_cast<int>(k));
+  if (!lo.is_zero()) y = y * (W(1) - lo);
+  return {y, units + 6.0};
+}
+
+// erf x for an exact x > 0: (2 / sqrt(pi)) e^-(x^2) S for S the sum over
+// n >= 0 of 2^n x^(2n + 1) / (1 3 5 ... (2n + 1)), whose terms are positive.
+template <class W, bool kUseTables>
+Tracked<W> ErfPositive(const W& x) {
+  const W y = scalbn(x * x, 1);  // 2 x^2, within 1 u.
+  W term = x;
+  W sum = x;
+  int n = 0;
+  for (;;) {
+    ++n;
+    term = DivSmall(term * y, static_cast<limb_t>(2 * n + 1));
+    sum = sum + term;
+    // From where y / (2n + 3) < 1/2, the rest is below twice the next term,
+    // and so below this one.
+    if (scalbn(y, 1) < W(2 * n + 3) &&
+        term.raw_exponent() < sum.raw_exponent() - W::kPrecision - 6) {
+      break;
+    }
+  }
+  // Term n is within 3n u, and the sum of positive terms within 4n u.
+  const Tracked<W> series{sum, 4.0 * n + 4};
+  return TrackedMul(GetSpecialConstants<W>().two_over_sqrt_pi,
+                    TrackedMul(ExpMinusSquare<W, kUseTables>(x), series));
+}
+
+// Where erfc x < 2^-(P + 2): x^2 >= (P + 2) ln 2, since erfc x < e^-(x^2) for
+// x >= 1.
+template <class F>
+bool ErfIsSaturated(const F& a) {
+  if (a < F(1)) return false;
+  const Wide1<F> wide = FloatAccess::Convert<Wide1<F>>(a, NearestEnv{});
+  return wide * wide >=
+         Wide1<F>(F::kPrecision + 2.01) * GetMathConstants<Wide1<F>>().ln2;
+}
+
+// erfc x for x >= kErfcAsymptotic: e^-(x^2) / (x sqrt(pi)) A for A the sum
+// over n of (-1)^n (2n - 1)!! / (2x^2)^n, whose terms alternate and decrease
+// up to n = x^2 or so, where they are near sqrt(2) e^-(x^2) < 2^-(P + 8)
+// relative, and whose remainder is below the first omitted term.
+template <class W>
+bool ErfcIsAsymptotic(const W& x) {
+  return x * x >= W(0.6932 * (W::kPrecision + 8));
+}
+
+// e^(x^2) erfc x from the asymptotic series, for x >= kErfcAsymptotic.
+template <class W>
+Tracked<W> ErfcScaledAsymptotic(const W& x) {
+  const W one(1);
+  const W y = one / scalbn(x * x, 1);  // Within 2 u.
+  W term = one;
+  W sum = one;
+  int n = 1;
+  for (; n < 4 * W::kPrecision; ++n) {
+    term = MulSmall(term * y, static_cast<limb_t>(2 * n - 1));
+    sum = (n & 1) != 0 ? sum - term : sum + term;
+    if (term.raw_exponent() < -(W::kPrecision + 6)) break;
+  }
+  // The sum is above 0.99, and its terms below 0.01: each rounding adds
+  // below 1 u, and term n, within 4n u, adds less.
+  const double series_units = n < 4 * W::kPrecision ? 1.1 * n + 4 : 1e30;
+  const SpecialConstants<W>& sc = GetSpecialConstants<W>();
+  return {sum / (x * sc.sqrt_pi.value), series_units + sc.sqrt_pi.units + 2};
+}
+
+template <class W, bool kUseTables>
+Tracked<W> ErfcAsymptotic(const W& x) {
+  return TrackedMul(ExpMinusSquare<W, kUseTables>(x), ErfcScaledAsymptotic(x));
+}
+
+// u(x0 + h) for u(x) = e^(x^2) erfc x, from u(x0), by Taylor's series: since
+// u' = 2xu - 2/sqrt(pi), a_0 = u(x0), a_1 = 2 x0 a_0 - 2/sqrt(pi) and
+// a_(n+1) = (2 x0 a_n + 2 a_(n-1)) / (n + 1). With |h| <= 1/16 and
+// x0 <= 40, |a_(n+1) h^(n+1)| <= (2 x0 |h| |a_n h^n| + 2 h^2 |a_(n-1)
+// h^(n-1)|) / (n + 1) falls by half or more from n = 5 on, so the rest is
+// below twice the last two terms. An error of u(x0) moves u(x0 + h) as the
+// equation's other solution does, by the factor
+// e^(2 x0 h + h^2) u(x0) / u(x0 + h) <= e^(2 x0 h + h^2 + 1.13 |h|),
+// which is below 1 for steps down from x0 >= 1.
+template <class W>
+Tracked<W> ErfcScaledStep(const Tracked<W>& u0, const W& x0, const W& h) {
+  const W c = GetSpecialConstants<W>().two_over_sqrt_pi.value;
+  const W two_x0 = scalbn(x0, 1);
+  W previous = u0.value;
+  W current = two_x0 * previous - c;
+  W power = h;
+  W sum = previous + current * power;
+  int n = 1;
+  for (; n < 8 * W::kPrecision; ++n) {
+    const W next = DivSmall(two_x0 * current + scalbn(previous, 1),
+                            static_cast<limb_t>(n + 1));
+    const W last_term = current * power;
+    power = power * h;
+    const W term = next * power;
+    sum = sum + term;
+    previous = current;
+    current = next;
+    if (n >= 5 && (term.is_zero() || term.raw_exponent() <
+                                         sum.raw_exponent() - W::kPrecision - 10) &&
+        (last_term.is_zero() ||
+         last_term.raw_exponent() < sum.raw_exponent() - W::kPrecision - 10)) {
+      break;
+    }
+  }
+  const double hd = static_cast<double>(h);
+  const double xd = static_cast<double>(x0);
+  const double factor = std::exp(2 * xd * hd + hd * hd + 1.13 * std::abs(hd));
+  return {sum, factor * (u0.units + 4) + 3.0 * n + 12};
+}
+
+// u(x) = e^(x^2) erfc x at x = i/16 for i = 0 .. kCount - 1, from the
+// asymptotic series at the last point and steps down from there, which damp
+// the errors of the points above.
+template <class W>
+struct ErfcScaledTable {
+  static constexpr int kCount = IntegerSqrt(178 * (W::kPrecision + 8)) + 2;
+  std::vector<Tracked<W>> u;
+
+  ErfcScaledTable() : u(static_cast<std::size_t>(kCount)) {
+    const auto point = [](int i) { return scalbn(W(i), -4); };
+    u[kCount - 1] = ErfcScaledAsymptotic(point(kCount - 1));
+    const W step = scalbn(W(-1), -4);
+    for (int i = kCount - 2; i >= 0; --i) {
+      u[static_cast<std::size_t>(i)] = ErfcScaledStep(
+          u[static_cast<std::size_t>(i + 1)], point(i + 1), step);
+    }
+  }
+};
+
+template <class W>
+const ErfcScaledTable<W>& GetErfcScaledTable() {
+  static const ErfcScaledTable<W> table;
+  return table;
+}
+
+// erfc x for 0 <= x < kErfcAsymptotic in the first working format: e^-(x^2)
+// u(x), with u from the nearest table point, |h| <= 1/32.
+template <class W>
+Tracked<W> ErfcFromTable(const W& x) {
+  const ErfcScaledTable<W>& table = GetErfcScaledTable<W>();
+  const int i = to_integer<int>(scalbn(x, 4), Rounding::kNearestEven);
+  const W x0 = scalbn(W(i), -4);
+  const Tracked<W> u =
+      ErfcScaledStep(table.u[static_cast<std::size_t>(i)], x0, x - x0);
+  return TrackedMul(ExpMinusSquare<W, true>(x), u);
+}
+
+// The precision in which 1 - erf x is computed for erfc x below the
+// asymptotic range, where it loses up to about 1.44 x^2 < kPrecision bits.
+template <class W>
+using ErfcWorking = Float<2 * W::kPrecision + 128, 29>;
+
+template <class F, class Env, int kFirstLevel = 1>
+F ErfImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) return x;
+  const bool negative = x.signbit();
+  if (x.is_inf()) return negative ? F(-1) : F(1);
+  // erf x = 1 - erfc x, just below 1 in magnitude.
+  if (ErfIsSaturated(abs(x))) {
+    return RoundBeside(negative ? F(-1) : F(1), negative, env);
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
+    const W a = abs(FloatAccess::Convert<W>(x, NearestEnv{}));
+    Tracked<W> value;
+    bool done = false;
+    if constexpr (kFirst) {
+      if (a >= W(1)) {
+        // erf x = 1 - erfc x, with erfc x < 0.16 here: the subtraction loses
+        // nothing to speak of, and erfc is cheaper than the series.
+        const Tracked<W> complement = ErfcIsAsymptotic(a)
+                                          ? ErfcAsymptotic<W, true>(a)
+                                          : ErfcFromTable(a);
+        value = TrackedAdd(Tracked<W>{W(1), 0},
+                           Tracked<W>{-complement.value, complement.units});
+        done = true;
+      }
+    }
+    if (!done) value = ErfPositive<W, kFirst>(a);
+    if (negative) value.value = -value.value;
+    return RoundTracked(value, last, env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F ErfcImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return x.signbit() ? F(2) : F::Zero();
+  if (x.is_zero()) return F(1);
+  const bool negative = x.signbit();
+  const F a = abs(x);
+  // erfc x = 1 - 2x / sqrt(pi) + ..., with 2 |x| / sqrt(pi) < 2^-(P + 2).
+  if (x.raw_exponent() <= -(F::kPrecision + 4)) {
+    return RoundBeside(F(1), negative, env);
+  }
+  if (ErfIsSaturated(a)) {
+    if (negative) return RoundBeside(F(2), false, env);
+    // erfc x < e^-(x^2) is below a quarter of the smallest subnormal.
+    const Wide1<F> wide = FloatAccess::Convert<Wide1<F>>(a, NearestEnv{});
+    if (wide * wide >
+        Wide1<F>(F::kPrecision + 3.01 - F::kEmin) *
+            GetMathConstants<Wide1<F>>().ln2) {
+      return RoundTiny<F>(false, env);
+    }
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
+    const W wa = FloatAccess::Convert<W>(a, NearestEnv{});
+    if (negative) {
+      // erfc x = 1 + erf |x|, a sum of positive terms.
+      return RoundTracked(
+          TrackedAdd(Tracked<W>{W(1), 0}, ErfPositive<W, kFirst>(wa)), last,
+          env, result);
+    }
+    if (ErfcIsAsymptotic(wa)) {
+      return RoundTracked(ErfcAsymptotic<W, kFirst>(wa), last, env, result);
+    }
+    if constexpr (kFirst) {
+      return RoundTracked(ErfcFromTable(wa), last, env, result);
+    } else {
+      // 1 - erf x in twice the precision, which the subtraction needs.
+      using B = ErfcWorking<W>;
+      const Tracked<B> erf = ErfPositive<B, false>(
+          FloatAccess::Convert<B>(a, NearestEnv{}));
+      return RoundTracked(
+          TrackedAdd(Tracked<B>{B(1), 0}, Tracked<B>{-erf.value, erf.units}),
+          last, env, result);
+    }
+  });
+}
+
 // --- Powers and roots ---
 
 // The exact x^2 + y^2 always fits: the exponents differ by at most P + 2.
@@ -2797,6 +3429,49 @@ Float<P, E> log10p1(const Float<P, E>& x) {
 template <int P, int E>
 Float<P, E> log10p1(const Float<P, E>& x, Context& context) {
   return detail::LogPlus1Impl<10>(x, detail::ContextEnv{context});
+}
+
+// The error function, 2 / sqrt(pi) times the integral of e^-(t^2) from 0 to x.
+template <int P, int E>
+Float<P, E> erf(const Float<P, E>& x) {
+  return detail::ErfImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> erf(const Float<P, E>& x, Context& context) {
+  return detail::ErfImpl(x, detail::ContextEnv{context});
+}
+
+// The complementary error function, 1 - erf x, accurate for large x.
+template <int P, int E>
+Float<P, E> erfc(const Float<P, E>& x) {
+  return detail::ErfcImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> erfc(const Float<P, E>& x, Context& context) {
+  return detail::ErfcImpl(x, detail::ContextEnv{context});
+}
+
+// The gamma function. tgamma(+-0) is +-infinity and raises divide by zero;
+// negative integers and -infinity give NaN and raise invalid. Exact for the
+// factorials F holds.
+template <int P, int E>
+Float<P, E> tgamma(const Float<P, E>& x) {
+  return detail::TgammaImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> tgamma(const Float<P, E>& x, Context& context) {
+  return detail::TgammaImpl(x, detail::ContextEnv{context});
+}
+
+// log |Gamma(x)|. It is +infinity and raises divide by zero at 0 and the
+// negative integers, and +0 at 1 and 2.
+template <int P, int E>
+Float<P, E> lgamma(const Float<P, E>& x) {
+  return detail::LgammaImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> lgamma(const Float<P, E>& x, Context& context) {
+  return detail::LgammaImpl(x, detail::ContextEnv{context});
 }
 
 // The inverse tangent, in (-pi/2, pi/2); atan(+-infinity) is +-pi/2 rounded.
