@@ -1,10 +1,11 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Exponentials, logarithms, hyperbolic functions, powers and roots: exp, exp2,
-// expm1, log, log2, log10, log1p, sinh, cosh, tanh, asinh, acosh, atanh, pow,
-// cbrt and hypot, correctly rounded in all five modes, with the IEEE 754 flags
-// when a Context is given.
+// Exponentials, logarithms, hyperbolic and trigonometric functions, powers and
+// roots: exp, exp2, expm1, log, log2, log10, log1p, sinh, cosh, tanh, asinh,
+// acosh, atanh, sin, cos, tan, pow, cbrt and hypot, and the constant pi,
+// correctly rounded in all five modes, with the IEEE 754 flags when a Context
+// is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -37,6 +38,7 @@
 #include "mpfix/bigint.h"
 #include "mpfix/charconv.h"
 #include "mpfix/float.h"
+#include "mpfix/pi.h"
 
 namespace mpfix {
 namespace detail {
@@ -1153,6 +1155,591 @@ F AtanhImpl(const F& x, const Env& env) {
   return HyperbolicEvaluate<Hyperbolic::kAtanh, F, kFirstLevel>(x, env);
 }
 
+// --- Trigonometric functions ---
+
+// pi/2 and 2/pi in a working format, rounded to nearest, and pi/2 split as
+// half_pi_hi + half_pi_lo: half_pi_hi has kPrecision - 32 bits, so that
+// k half_pi_hi is exact for |k| < 2^32, and the sum is within
+// 2^-(2 kPrecision - 34) of pi/2.
+template <class W>
+struct TrigConstants {
+  W half_pi;
+  W half_pi_hi;
+  W half_pi_lo;
+  W two_over_pi;
+
+  TrigConstants() {
+    constexpr std::size_t kBits = 2 * W::kPrecision + 64;
+    WithPiBits(kBits, [this](const PiFixedPoint& p) {
+      // pi/2 2^kBits, and 2/pi 2^kBits, within 1.
+      BigUint pi_fixed = p.pi;
+      pi_fixed.ShiftRight(p.bits - kBits + 1);
+      BigUint inverse = p.two_over_pi;
+      inverse.ShiftRight(p.bits - kBits);
+      half_pi = FromFixedPoint<W>(pi_fixed, kBits);
+      two_over_pi = FromFixedPoint<W>(inverse, kBits);
+      BigUint hi = pi_fixed;
+      const std::size_t drop = hi.bit_length() - (W::kPrecision - 32);
+      hi.ShiftRight(drop);
+      hi.ShiftLeft(drop);
+      BigUint lo = pi_fixed;
+      lo.Sub(hi);
+      half_pi_hi = FromFixedPoint<W>(hi, kBits);
+      half_pi_lo = FromFixedPoint<W>(lo, kBits);
+      return 0;
+    });
+  }
+};
+
+template <class W>
+const TrigConstants<W>& GetTrigConstants() {
+  static const TrigConstants<W> constants;
+  return constants;
+}
+
+// |x| = (k + f) pi/2 for an integer k and |f| <= 1/2, for a finite nonzero x:
+// returns r = f pi/2, with a relative error below 3.1 u, and k modulo 4 in
+// `quadrant`. This is Payne and Hanek's reduction: with |x| = M 2^q for an
+// integer M, only the bits of 2/pi from 2^-(q - 1) on matter modulo 4, and
+// the product of M with a window of them is exact.
+// The first attempt keeps kFirstGuard bits beyond W's precision, and each
+// further one 64 more; tests start lower to exercise the later attempts.
+template <class W, std::int64_t kFirstGuard = 64, class F>
+W ReduceByHalfPi(const F& x, int& quadrant) {
+  constexpr std::int64_t kSignificandBits =
+      static_cast<std::int64_t>(F::kLimbs) * kLimbBits;
+  const BigUint m = BigUint::FromLimbs(x.raw_limbs().data(), F::kLimbs);
+  const std::int64_t q = std::int64_t{x.raw_exponent()} - kSignificandBits + 1;
+  // 2/pi = sum of t_j 2^-j over j >= 1; M 2^q t_j 2^-j is a multiple of 4
+  // for j <= q - 2.
+  const std::int64_t first = (std::max)(std::int64_t{1}, q - 1);
+  for (std::int64_t guard = kFirstGuard;; guard += 64) {
+    // The bits of 2/pi after 2^-last, and the table's error, below
+    // 2^-(last + 8), move x 2/pi by less than 1.01 M 2^(q - last), which
+    // is 1.01 2^-(W::kPrecision + guard).
+    const std::int64_t last = q + kSignificandBits + W::kPrecision + guard;
+    const auto table_bits = static_cast<std::size_t>(last + 8);
+    const BigUint product =
+        WithPiBits(table_bits, [&](const PiFixedPoint& p) {
+          return m * BitRange(p.two_over_pi,
+                                 p.bits - static_cast<std::size_t>(last),
+                                 static_cast<std::size_t>(last - first + 1));
+        });
+    // product = x 2/pi 2^fraction_bits, modulo 2^(fraction_bits + 2).
+    const auto fraction_bits = static_cast<std::size_t>(last - q);
+    const bool above_half = product.bit(fraction_bits - 1);
+    BigUint fraction = BitRange(product, 0, fraction_bits);
+    if (above_half) {
+      BigUint whole(1);
+      whole.ShiftLeft(fraction_bits);
+      whole.Sub(fraction);
+      fraction = std::move(whole);
+    }
+    // With |f| >= 2^-(guard - 8), the error is below 2^-(W::kPrecision + 7)
+    // relative. Otherwise x lies very close to a multiple of pi/2, and more
+    // bits are needed.
+    if (static_cast<std::int64_t>(fraction.bit_length()) + guard <
+        static_cast<std::int64_t>(fraction_bits) + 9) {
+      continue;
+    }
+    quadrant = ((product.bit(fraction_bits) ? 1 : 0) +
+                (product.bit(fraction_bits + 1) ? 2 : 0) +
+                (above_half ? 1 : 0)) &
+               3;
+    // Rounding f, pi/2 and their product add 3 u.
+    const W f = RoundInteger<W>(above_half, fraction,
+                                -static_cast<std::int64_t>(fraction_bits),
+                                false, SilentEnv{Rounding::kNearestEven});
+    return f * GetTrigConstants<W>().half_pi;
+  }
+}
+
+// The reduction of ReduceByHalfPi for |x| < 2^27, by Cody and Waite's method:
+// r = (|x| - k half_pi_hi) - k half_pi_lo, where the first difference is
+// exact. Then r is within 2^-(2 kPrecision - 61) of the true value, from
+// k half_pi_lo and the error of the split, plus one rounding: within 1.01 u
+// for |r| >= 2^-(kPrecision - 68). Returns false for a smaller r, which needs
+// the exact reduction.
+template <class W, class F>
+bool ReduceSmallByHalfPi(const F& x, int& quadrant, W& r) {
+  const TrigConstants<W>& c = GetTrigConstants<W>();
+  const W wide = FloatAccess::Convert<W>(x, NearestEnv{});
+  const W multiple = round(wide * c.two_over_pi);
+  const auto k = to_integer<std::int64_t>(multiple, Rounding::kNearestEven);
+  quadrant = static_cast<int>(k & 3);
+  if (k == 0) {
+    r = wide;
+    return true;
+  }
+  // x and k half_pi_hi are multiples of 2^-(kPrecision - 34) below 2^29,
+  // and their difference is below 1.
+  r = (wide - multiple * c.half_pi_hi) - multiple * c.half_pi_lo;
+  return r.raw_exponent() >= 68 - W::kPrecision;
+}
+
+// Fixed-point numbers v 2^(64 kN) in kN + 1 limbs, least significant first,
+// in two's complement, for the sine series: its terms need only an absolute
+// error, and raw limbs skip the normalization and rounding of every step.
+template <std::size_t kN>
+using FixedLimbs = std::array<limb_t, kN + 1>;
+
+// a b for nonnegative a and b, truncated: within 2^-64kN below.
+template <std::size_t kN>
+FixedLimbs<kN> FixedMul(const FixedLimbs<kN>& a, const FixedLimbs<kN>& b) {
+  constexpr std::size_t kCount = kN + 1;
+  std::array<limb_t, 2 * kCount> full{};
+  for (std::size_t i = 0; i < kCount; ++i) {
+    if (a[i] == 0) continue;
+    limb_t carry = 0;
+    for (std::size_t j = 0; j < kCount; ++j) {
+      limb_t hi;
+      limb_t lo = mul_wide(a[i], b[j], hi);
+      carry_t c = 0;
+      lo = adc(lo, full[i + j], c);
+      hi += c;
+      c = 0;
+      lo = adc(lo, carry, c);
+      full[i + j] = lo;
+      carry = hi + c;
+    }
+    full[i + kCount] = carry;
+  }
+  FixedLimbs<kN> result;
+  for (std::size_t i = 0; i < kCount; ++i) result[i] = full[i + kN];
+  return result;
+}
+
+// a m for a nonnegative a and a product that fits.
+template <std::size_t kN>
+FixedLimbs<kN> FixedMulSmall(const FixedLimbs<kN>& a, limb_t m) {
+  FixedLimbs<kN> result;
+  limb_t carry = 0;
+  for (std::size_t i = 0; i <= kN; ++i) {
+    limb_t hi;
+    limb_t lo = mul_wide(a[i], m, hi);
+    carry_t c = 0;
+    result[i] = adc(lo, carry, c);
+    carry = hi + c;
+  }
+  return result;
+}
+
+// acc += x, or acc -= x.
+template <std::size_t kN>
+void FixedAccumulate(FixedLimbs<kN>& acc, const FixedLimbs<kN>& x,
+                     bool subtract) {
+  carry_t carry = 0;
+  for (std::size_t i = 0; i <= kN; ++i) {
+    acc[i] = subtract ? sbb(acc[i], x[i], carry) : adc(acc[i], x[i], carry);
+  }
+}
+
+template <std::size_t kN>
+void FixedNegate(FixedLimbs<kN>& a) {
+  carry_t carry = 1;
+  for (std::size_t i = 0; i <= kN; ++i) a[i] = adc(~a[i], 0, carry);
+}
+
+// A nonnegative v < 2^63 of the working format, truncated: within 2^-64kN.
+template <std::size_t kN, class W>
+FixedLimbs<kN> ToFixed(const W& v) {
+  static_assert(W::kLimbs == kN);
+  FixedLimbs<kN> result{};
+  if (v.is_zero()) return result;
+  // v = limbs 2^(e + 1 - 64 kN), so v 2^(64 kN) = limbs 2^(e + 1).
+  for (std::size_t i = 0; i < kN; ++i) result[i] = v.raw_limbs()[i];
+  const int shift = v.raw_exponent() + 1;
+  if (shift > 0) {
+    for (std::size_t i = kN; i > 0; --i) {
+      result[i] = (result[i] << shift) | (result[i - 1] >> (kLimbBits - shift));
+    }
+    result[0] <<= shift;
+  } else if (shift < 0) {
+    const int right = -shift;
+    const std::size_t words = static_cast<std::size_t>(right / kLimbBits);
+    const int bits = right % kLimbBits;
+    for (std::size_t i = 0; i <= kN; ++i) {
+      const std::size_t from = i + words;
+      const limb_t low = from <= kN ? result[from] : 0;
+      const limb_t high = from + 1 <= kN ? result[from + 1] : 0;
+      result[i] = bits == 0 ? low : (low >> bits) | (high << (kLimbBits - bits));
+    }
+  }
+  return result;
+}
+
+// A positive fixed-point value, rounded to the working format.
+template <class W, std::size_t kN>
+W FromFixed(FixedLimbs<kN> a) {
+  std::size_t top = kN;
+  while (a[top] == 0) --top;
+  const int shift = countl_zero(a[top]);
+  // The value's top bit has weight 2^(64 (top - kN) + 63 - shift).
+  const std::int64_t exponent =
+      static_cast<std::int64_t>(kLimbBits) *
+          (static_cast<std::int64_t>(top) - static_cast<std::int64_t>(kN)) +
+      (kLimbBits - 1 - shift);
+  if (shift != 0) {
+    for (std::size_t i = top; i > 0; --i) {
+      a[i] = (a[i] << shift) | (a[i - 1] >> (kLimbBits - shift));
+    }
+    a[0] <<= shift;
+  }
+  return FloatAccess::Round<W>(false, exponent, a.data(), top + 1, false,
+                               NearestEnv{});
+}
+
+// sin b for an exact b with 0 < |b| < 1/2, with a relative error below
+// 6 u: b G(b^2) for G(y) = sum over j of (-y)^j / (2j + 1)!, by Paterson
+// and Stockmeyer as in ExpM1Kernel, in fixed point. The coefficients of a
+// block of k terms are small integers over one common denominator, so that
+// only the powers of y and one product per block are full multiplications.
+// With acc_b the sum from term bk on over its first coefficient,
+// acc_b = 1 - T_b / D for T_b = sum over 0 < i < k of (-1)^(i + 1) M_i y^i
+// + (-1)^(k + 1) y^k acc_(b+1), where D = d(bk + 1) ... d(bk + k),
+// M_i = d(bk + i + 1) ... d(bk + k) and d(j) = 2j (2j + 1).
+template <class W>
+W SinSeries(const W& b) {
+  constexpr std::size_t kN = W::kLimbs;
+  // The first omitted term, j = n, relative to b, is below
+  // |b|^2n / (2n + 1)! < 2^-(kPrecision + 4).
+  const int scale = -(b.raw_exponent() + 1);
+  int n = 1;
+  int log2_factorial = 2;  // A lower bound on log2((2n + 1)!).
+  while (2 * n * scale + log2_factorial < W::kPrecision + 4) {
+    ++n;
+    log2_factorial += std::bit_width(static_cast<unsigned>(2 * n)) - 1 +
+                      std::bit_width(static_cast<unsigned>(2 * n + 1)) - 1;
+  }
+  const int terms = n;  // j = 0 .. n - 1.
+  const auto d = [](int j) {
+    return static_cast<limb_t>(2 * j) * static_cast<limb_t>(2 * j + 1);
+  };
+  // k factors d(j) <= d(n) must fit in 63 bits.
+  const int d_bits = std::bit_width(d(n));
+  const int k = (std::max)(1, (std::min)(IntegerSqrt(terms), 63 / d_bits));
+  constexpr int kMaxBlock = 16;
+  std::array<FixedLimbs<kN>, kMaxBlock + 1> powers;
+  powers[1] = ToFixed<kN>(b * b);
+  for (int i = 2; i <= k; ++i) {
+    powers[static_cast<std::size_t>(i)] =
+        FixedMul<kN>(powers[static_cast<std::size_t>(i - 1)], powers[1]);
+  }
+  FixedLimbs<kN> one{};
+  one[kN] = 1;
+  const int blocks = (terms + k - 1) / k;
+  FixedLimbs<kN> acc = one;
+  for (int block = blocks - 1; block >= 0; --block) {
+    const int base = block * k;
+    const int size = (std::min)(k, terms - base);
+    const bool has_next = block < blocks - 1;
+    FixedLimbs<kN> t{};
+    if (has_next) {
+      FixedAccumulate<kN>(
+          t, FixedMul<kN>(powers[static_cast<std::size_t>(size)], acc),
+          (size & 1) == 0);
+    }
+    limb_t multiplier = 1;
+    for (int i = size - 1; i >= 1; --i) {
+      if (has_next || i < size - 1) multiplier *= d(base + i + 1);
+      FixedAccumulate<kN>(
+          t, FixedMulSmall<kN>(powers[static_cast<std::size_t>(i)], multiplier),
+          (i & 1) == 0);
+    }
+    if (size < 2 && !has_next) {
+      acc = one;
+      continue;
+    }
+    // T is positive: its first term dominates, since y < 1/4.
+    DivideLimbs(t.data(), kN + 1, multiplier * d(base + 1));
+    acc = one;
+    FixedAccumulate<kN>(acc, t, true);
+  }
+  // Each power, product and quotient truncates by below 2^-64kN, which is u,
+  // and the multipliers' growth is undone by the division: acc is within 4 u
+  // absolute, and acc > 0.98. Rounding it and b acc add 2 u.
+  return b * FromFixed<W, kN>(acc);
+}
+
+// sin r and cos r - 1 for an exact r with |r| < 0.8, with relative errors
+// below `sin_units` and `cos_units` u, by halving r and doubling back. For
+// working formats without tables, and for building them.
+template <class W>
+void SinCosByHalving(const W& r, W& sin_r, W& cos_r_minus_1, double& sin_units,
+                     double& cos_units) {
+  const W one(1);
+  if (r.is_zero()) {
+    sin_r = r;
+    cos_r_minus_1 = W::Zero();
+    sin_units = 0;
+    cos_units = 0;
+    return;
+  }
+  // Halve r below 2^-kScale; each halving is undone by two multiplications
+  // afterwards.
+  constexpr int kScale = (std::max)(2, IntegerSqrt(W::kPrecision) / 3);
+  const int halvings = (std::max)(0, r.raw_exponent() + 1 + kScale);
+  W s = SinSeries(scalbn(r, -halvings));
+  // Each rounding adds up to 1 u.
+  double ds = 6;
+  // cos b - 1 = -s^2 / (1 + sqrt(1 - s^2)), with no cancellation: s^2 within
+  // 2 ds + 1, the denominator within 1.8 u and the quotient 1 u more.
+  W c = -(s * s) / (one + sqrt(one - s * s));
+  double dc = 2 * ds + 4;
+  // sin 2a = 2 sin a (1 + (cos a - 1)) and cos 2a - 1 = -2 sin^2 a. A relative
+  // error e of cos a - 1 makes one of |c| e / (1 + c) <= 2 |c| e in 1 + c,
+  // for c >= -1/2.
+  for (int i = 0; i < halvings; ++i) {
+    const double ratio = std::ldexp(1.0, c.raw_exponent() + 2);
+    const W next_c = -scalbn(s * s, 1);
+    s = scalbn(s * (one + c), 1);
+    const double next_ds = ds + ratio * dc + 2;
+    dc = 2 * ds + 1;
+    ds = next_ds;
+    c = next_c;
+  }
+  sin_r = s;
+  cos_r_minus_1 = c;
+  sin_units = ds;
+  cos_units = dc;
+}
+
+// A value and a bound on its relative error, in units of u.
+template <class W>
+struct Tracked {
+  W value;
+  double units;
+};
+
+template <class W>
+Tracked<W> TrackedMul(const Tracked<W>& a, const Tracked<W>& b) {
+  return {a.value * b.value, a.units + b.units + 1};
+}
+
+// a + b, whose error is that of each term relative to the sum: with
+// |a| < 2^(ea + 1) and |a + b| >= 2^es, 2^(ea + 1 - es) times a's.
+template <class W>
+Tracked<W> TrackedAdd(const Tracked<W>& a, const Tracked<W>& b) {
+  if (a.value.is_zero()) return b;
+  if (b.value.is_zero()) return a;
+  const W sum = a.value + b.value;
+  if (sum.is_zero()) return {sum, 0};  // Only for exactly opposite terms.
+  const int es = sum.raw_exponent();
+  // The computed sum is within 1 u of the exact one, hence the factor.
+  return {sum, (std::ldexp(a.units, a.value.raw_exponent() + 1 - es) +
+                std::ldexp(b.units, b.value.raw_exponent() + 1 - es)) *
+                       1.001 +
+                   1};
+}
+
+// sin and cos of i/2^7 for i in [0, 102] and of j/2^14 for j in [0, 64],
+// computed in twice the precision and rounded once: within 1.1 u.
+template <class W>
+struct TrigTables {
+  static constexpr int kCount1 = 103;
+  static constexpr int kCount2 = 65;
+  std::array<W, kCount1> sin1;
+  std::array<W, kCount1> cos1;
+  std::array<W, kCount2> sin2;
+  std::array<W, kCount2> cos2;
+
+  TrigTables() {
+    using Wide = Float<2 * W::kPrecision, 29>;
+    const auto fill = [](int count, int shift, W* sin_out, W* cos_out) {
+      for (int i = 0; i < count; ++i) {
+        Wide s;
+        Wide c;
+        double s_units;
+        double c_units;
+        SinCosByHalving(scalbn(Wide(i), -shift), s, c, s_units, c_units);
+        sin_out[i] = FloatAccess::Convert<W>(s, NearestEnv{});
+        cos_out[i] = FloatAccess::Convert<W>(Wide(1) + c, NearestEnv{});
+      }
+    };
+    fill(kCount1, 7, sin1.data(), cos1.data());
+    fill(kCount2, 14, sin2.data(), cos2.data());
+  }
+};
+
+template <class W>
+const TrigTables<W>& GetTrigTables() {
+  static const TrigTables<W> tables;
+  return tables;
+}
+
+// sin r and cos r for an exact r with |r| < 0.8, with relative errors below
+// `sin_units` and `cos_units` u. With tables, r = i/2^7 + j/2^14 + r2 with
+// |r2| <= 2^-15, and sin(a + b) = sin a cos b + cos a sin b and
+// cos(a + b) = cos a cos b - sin a sin b combine the parts; the errors are
+// tracked as they go, since the parts may have opposite signs.
+template <class W, bool kUseTables>
+void SinCosReduced(const W& r, W& sin_r, W& cos_r, double& sin_units,
+                   double& cos_units) {
+  const W one(1);
+  if constexpr (kUseTables) {
+    const TrigTables<W>& t = GetTrigTables<W>();
+    const W a = abs(r);
+    // Both subtractions are exact.
+    const int i = to_integer<int>(scalbn(a, 7), Rounding::kNearestEven);
+    const W r1 = i != 0 ? a - scalbn(W(i), -7) : a;
+    const int j = to_integer<int>(scalbn(r1, 14), Rounding::kNearestEven);
+    const W r2 = j != 0 ? r1 - scalbn(W(j), -14) : r1;
+    Tracked<W> s{W::Zero(), 0};
+    Tracked<W> c{one, 0};
+    if (!r2.is_zero()) {
+      s = {SinSeries(r2), 6};
+      // cos r2 = sqrt(1 - s^2), where s^2 < 2^-30 adds nothing to speak of.
+      c = {sqrt(one - s.value * s.value), 1.6};
+    }
+    const auto combine = [&s, &c](const W& sin_part, const W& cos_part,
+                                  bool negative) {
+      const Tracked<W> sp{negative ? -sin_part : sin_part, 1.1};
+      const Tracked<W> cp{cos_part, 1.1};
+      const Tracked<W> next_s =
+          TrackedAdd(TrackedMul(sp, c), TrackedMul(cp, s));
+      const Tracked<W> sin_sin = TrackedMul(sp, s);
+      c = TrackedAdd(TrackedMul(cp, c),
+                     Tracked<W>{-sin_sin.value, sin_sin.units});
+      s = next_s;
+    };
+    if (j != 0) {
+      const auto index = static_cast<std::size_t>(j < 0 ? -j : j);
+      combine(t.sin2[index], t.cos2[index], j < 0);
+    }
+    if (i != 0) {
+      const auto index = static_cast<std::size_t>(i);
+      combine(t.sin1[index], t.cos1[index], false);
+    }
+    sin_r = r.signbit() ? -s.value : s.value;
+    cos_r = c.value;
+    sin_units = s.units;
+    cos_units = c.units;
+  } else {
+    W c;
+    double c_units;
+    SinCosByHalving(r, sin_r, c, sin_units, c_units);
+    // 1 + c, with |c| / (1 + c) <= 2 |c| for c >= -1/2.
+    cos_r = one + c;
+    cos_units =
+        std::ldexp(c_units, c.is_zero() ? -64 : c.raw_exponent() + 2) + 1;
+  }
+}
+
+enum class Trig { kSin, kCos, kTan };
+
+// The units of an error bound, rounded up.
+inline std::int64_t CeilUnits(double units) {
+  return static_cast<std::int64_t>(units) + 1;
+}
+
+template <Trig kKind, class F, int kFirstLevel, class Env>
+F TrigEvaluate(const F& x, const Env& env) {
+  const bool negative = x.signbit();
+  const F a = abs(x);
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    // Below 1/2, r = |x| is exact.
+    int quadrant = 0;
+    W r;
+    double reduction_units = 0;
+    if (a.raw_exponent() < -1) {
+      r = FloatAccess::Convert<W>(a, NearestEnv{});
+    } else if (a.raw_exponent() < 27 && ReduceSmallByHalfPi<W>(a, quadrant, r)) {
+      reduction_units = 1.5;
+    } else {
+      r = ReduceByHalfPi<W>(a, quadrant);
+      reduction_units = 3.1;
+    }
+    W s;
+    W cos_r;
+    double s_units;
+    double c_units;
+    SinCosReduced<W, std::is_same_v<W, Wide1<F>>>(r, s, cos_r, s_units,
+                                                  c_units);
+    // A relative error e of r makes at most e in sin r and 0.8 e in cos r
+    // for |r| <= pi/4.
+    s_units += reduction_units;
+    c_units += reduction_units;
+    W y;
+    double units;
+    if constexpr (kKind == Trig::kTan) {
+      // tan x = tan r, or -1 / tan r in odd quadrants.
+      units = s_units + c_units + 1;
+      y = (quadrant & 1) == 0 ? s / cos_r : -(cos_r / s);
+      if (negative) y = -y;
+    } else {
+      // sin(r + k pi/2) is sin r, cos r, -sin r and -cos r for k = 0..3, and
+      // cos(r + k pi/2) is sin(r + (k + 1) pi/2).
+      constexpr bool kOdd = kKind == Trig::kSin;
+      const int k = kOdd ? quadrant : quadrant + 1;
+      const bool use_cos = (k & 1) != 0;
+      y = use_cos ? cos_r : s;
+      units = use_cos ? c_units : s_units;
+      if ((k & 2) != 0) y = -y;
+      if constexpr (kOdd) {
+        if (negative) y = -y;
+      }
+    }
+    return RoundTranscendental(y,
+                               W::kPrecision - LostBitsWide(CeilUnits(units)),
+                               last, env, result);
+  });
+}
+
+// sin, cos and tan have no exact results besides sin(0), cos(0) and tan(0):
+// their values at algebraic arguments are transcendental.
+
+template <class F, class Env, int kFirstLevel = 1>
+F SinImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return InvalidResult<F>(env);
+  if (x.is_zero()) return x;
+  // sin x = x - x^3/6 + ..., always closer to zero than x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, x.signbit(), env);
+  return TrigEvaluate<Trig::kSin, F, kFirstLevel>(x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F CosImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return InvalidResult<F>(env);
+  if (x.is_zero()) return F(1);
+  // cos x = 1 - x^2/2 + ..., always below 1.
+  if (HyperbolicIsLinear(x)) return RoundBeside(F(1), false, env);
+  return TrigEvaluate<Trig::kCos, F, kFirstLevel>(x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F TanImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return InvalidResult<F>(env);
+  if (x.is_zero()) return x;
+  // tan x = x + x^3/3 + ..., always beyond x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, !x.signbit(), env);
+  return TrigEvaluate<Trig::kTan, F, kFirstLevel>(x, env);
+}
+
+// pi rounded to F, from P + 64 bits whose last 62 are far from a rounding
+// boundary, which every value of pi's bits so far has been.
+template <class F, class Env>
+F PiImpl(const Env& env) {
+  for (std::size_t bits = F::kPrecision + 64;; bits *= 2) {
+    bool decided = false;
+    const F result = WithPiBits(bits + 2, [&](const PiFixedPoint& p) {
+      BigUint top = p.pi;
+      top.ShiftRight(p.bits - bits);  // Within 2 of pi 2^bits.
+      const limb_t low = top.limbs()[0] & ((limb_t{1} << 62) - 1);
+      decided = low >= 4 && low <= (limb_t{1} << 62) - 4;
+      return RoundInteger<F>(false, top, -static_cast<std::int64_t>(bits), true,
+                             env);
+    });
+    if (decided) return result;
+  }
+}
+
 // --- Powers and roots ---
 
 // The exact x^2 + y^2 always fits: the exponents differ by at most P + 2.
@@ -1574,6 +2161,48 @@ Float<P, E> atanh(const Float<P, E>& x) {
 template <int P, int E>
 Float<P, E> atanh(const Float<P, E>& x, Context& context) {
   return detail::AtanhImpl(x, detail::ContextEnv{context});
+}
+
+// sin x, for x in radians. sin(+-infinity) is NaN and raises invalid. Large
+// arguments are reduced exactly, as if with infinitely many digits of pi.
+template <int P, int E>
+Float<P, E> sin(const Float<P, E>& x) {
+  return detail::SinImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> sin(const Float<P, E>& x, Context& context) {
+  return detail::SinImpl(x, detail::ContextEnv{context});
+}
+
+// cos x, for x in radians. cos(+-infinity) is NaN and raises invalid.
+template <int P, int E>
+Float<P, E> cos(const Float<P, E>& x) {
+  return detail::CosImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> cos(const Float<P, E>& x, Context& context) {
+  return detail::CosImpl(x, detail::ContextEnv{context});
+}
+
+// tan x, for x in radians. tan(+-infinity) is NaN and raises invalid. No
+// finite x is a pole, so the result is always finite.
+template <int P, int E>
+Float<P, E> tan(const Float<P, E>& x) {
+  return detail::TanImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> tan(const Float<P, E>& x, Context& context) {
+  return detail::TanImpl(x, detail::ContextEnv{context});
+}
+
+// pi, correctly rounded; mpfix::pi<binary256>(). It raises inexact.
+template <class F>
+F pi() {
+  return detail::PiImpl<F>(detail::NearestEnv{});
+}
+template <class F>
+F pi(Context& context) {
+  return detail::PiImpl<F>(detail::ContextEnv{context});
 }
 
 // x^y, with the special cases of IEEE 754: pow(x, +-0) and pow(1, y) are 1

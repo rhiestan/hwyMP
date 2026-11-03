@@ -172,6 +172,34 @@ much as exp, with one division more; they are 1.2 to 2 times faster than MPFR.
 asinh, acosh and atanh are logarithms of arguments formed without
 cancellation, through the same tables as log, and 2 to 10 times faster.
 
+### Trigonometric functions
+
+The same benchmark, with arguments as for exp.
+
+| Format | Library | sin | cos | tan |
+|---|---|---:|---:|---:|
+| binary128 | mpfix | 537 | 540 | 579 |
+| | MPFR | 1368 | 989 | 1655 |
+| | Boost | 4463 | 4531 | 9178 |
+| binary256 | mpfix | 927 | 921 | 975 |
+| | MPFR | 2016 | 1520 | 2350 |
+| | Boost | 9085 | 9132 | 18633 |
+| binary512 | mpfix | 2062 | 2102 | 2197 |
+| | MPFR | 3313 | 2636 | 4018 |
+| | Boost | 31449 | 31805 | 64496 |
+
+mpfix is 1.25 to 2.9 times faster than MPFR. Arguments below 2^27 are reduced
+by Cody and Waite's method, and larger ones, or those extremely close to
+a multiple of pi/2, by Payne and Hanek's, exactly. Two tables of sin and
+cos at multiples of 2^-7 and 2^-14 leave an argument below 2^-15, whose sine
+series runs in fixed point on raw limbs, without the rounding steps of Float
+arithmetic.
+
+Arguments with binary exponents above about 32000 need more of 2/pi than the
+first 32768 bits computed on first use. They are computed once, when first
+needed, by the Chudnovsky series: 0.3 s for 2^19 bits and 8 s for 2^22,
+which binary512's largest arguments need.
+
 ### Powers and roots
 
 The same benchmark. pow takes x as for log and y as for exp; cbrt takes values
@@ -196,7 +224,9 @@ root. hypot works in P + 64 bits and only falls back to an exact square root
 of 4P bits for results that may be exact or ties.
 
 The first call in each format builds constants and reduction tables, once:
-0.4 ms for exp and 0.5 ms for log at binary128, 2.2 ms and 3.7 ms at binary512.
+0.4 ms for exp and 0.5 ms for log at binary128, 2 ms and 3.7 ms at binary512.
+The first sin also computes pi and 2/pi, for all formats, in 3 ms; its own
+tables take 0.4 ms at binary256 and 1 ms at binary512.
 
 ## Batch prototype
 

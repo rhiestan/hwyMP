@@ -167,6 +167,57 @@ TEST(Math, Hyperbolic) {
   }
 }
 
+TEST(Math, Trigonometric) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  const F one(1);
+  EXPECT_TRUE(SameBits(sin(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(tan(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(cos(F::Zero(true)), one));
+
+  Context context;
+  EXPECT_TRUE(sin(F::QuietNaN(), context).is_nan());
+  EXPECT_TRUE(cos(F::Zero(), context) == one);
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(sin(inf, context).is_nan());
+  EXPECT_TRUE(cos(-inf, context).is_nan());
+  EXPECT_TRUE(tan(inf, context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{Rounding::kUp};
+  const F tiny = F::MinSubnormal();
+  EXPECT_TRUE(SameBits(sin(tiny, context), tiny));
+  EXPECT_TRUE(SameBits(tan(tiny, context), next_up(tiny)));
+  EXPECT_EQ(context.flags, unsigned{kFlagUnderflow | kFlagInexact});
+  context = Context{Rounding::kUp};
+  EXPECT_TRUE(SameBits(cos(F(1e-30), context), one));
+  context = Context{Rounding::kDown};
+  EXPECT_TRUE(SameBits(cos(F(1e-30), context), next_down(one)));
+  EXPECT_EQ(context.flags, unsigned{kFlagInexact});
+
+  for (const double x : {-1e22, -1e6, -30.0, -2.0, -0.5, -1e-3, 1e-20, 0.25,
+                         0.75, 0.785, 0.786, 1.0, 1.5707963267948966, 3.0,
+                         3.141592653589793, 5.0, 100.0, 1e10, 1e300}) {
+    EXPECT_NEAR(static_cast<double>(sin(F(x))), std::sin(x), 1e-15) << x;
+    EXPECT_NEAR(static_cast<double>(cos(F(x))), std::cos(x), 1e-15) << x;
+    const double t = std::tan(x);
+    EXPECT_NEAR(static_cast<double>(tan(F(x))), t, std::abs(t) * 1e-14) << x;
+  }
+}
+
+TEST(Math, Pi) {
+  EXPECT_EQ(to_string(pi<binary256>()),
+            to_string(from_string<binary256>(
+                "3.1415926535897932384626433832795028841971693993751058209749"
+                "445923078164062862")));
+  EXPECT_EQ(static_cast<double>(pi<binary128>()), 3.141592653589793);
+  Context context{Rounding::kDown};
+  const binary128 low = pi<binary128>(context);
+  context = Context{Rounding::kUp};
+  const binary128 high = pi<binary128>(context);
+  EXPECT_TRUE(next_up(low) == high);
+  EXPECT_EQ(context.flags, unsigned{kFlagInexact});
+}
+
 TEST(Math, InverseHyperbolic) {
   using F = binary128;
   const F inf = F::Infinity();

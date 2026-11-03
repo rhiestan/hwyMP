@@ -1,15 +1,15 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Single-threaded throughput of the exponentials, logarithms, hyperbolic
-// functions, powers and roots, on identical arguments for every library, all
-// rounding to nearest. Exponentials, sinh, cosh, tanh and asinh take
-// arguments in (-20, 20); logarithms and cbrt take positive values with binary
-// exponents in [-20, 20), and acosh one plus those; expm1 and log1p take
-// arguments below 1/4 in magnitude, and atanh below 1/2; pow takes x as for
-// log and y as for exp. MPFR runs at the format's precision;
-// Boost.Multiprecision's cpp_bin_float is timed for exp, log, the hyperbolic
-// functions and pow only.
+// Single-threaded throughput of the exponentials, logarithms, hyperbolic and
+// trigonometric functions, powers and roots, on identical arguments for every
+// library, all rounding to nearest. Exponentials, sinh, cosh, tanh, asinh,
+// sin, cos and tan take arguments in (-20, 20); logarithms and cbrt take
+// positive values with binary exponents in [-20, 20), and acosh one plus
+// those; expm1 and log1p take arguments below 1/4 in magnitude, and atanh
+// below 1/2; pow takes x as for log and y as for exp. MPFR runs at the
+// format's precision; Boost.Multiprecision's cpp_bin_float is timed for exp,
+// log, the hyperbolic and trigonometric functions and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -107,10 +107,13 @@ void ReportFirstCalls(const char* format) {
   const auto middle = Clock::now();
   sink = mpfix::log(F(3)).raw_limbs()[0];
   const auto end = Clock::now();
+  sink = mpfix::sin(F(3)).raw_limbs()[0];
+  const auto after_sin = Clock::now();
   const std::chrono::duration<double, std::micro> exp_us = middle - start;
   const std::chrono::duration<double, std::micro> log_us = end - middle;
-  std::printf("%-10s first exp %.0f us, first log %.0f us\n", format,
-              exp_us.count(), log_us.count());
+  const std::chrono::duration<double, std::micro> sin_us = after_sin - end;
+  std::printf("%-10s first exp %.0f us, first log %.0f us, first sin %.0f us\n",
+              format, exp_us.count(), log_us.count(), sin_us.count());
 }
 
 template <int P, int E>
@@ -155,6 +158,12 @@ void ReportFormat(const char* format) {
        mpfr_acosh, [](const Boost& x) { return Boost(acosh(x)); }},
       {"atanh", Range::kUnit, [](const F& x) { return mpfix::atanh(x); },
        mpfr_atanh, [](const Boost& x) { return Boost(atanh(x)); }},
+      {"sin", Range::kExp, [](const F& x) { return mpfix::sin(x); }, mpfr_sin,
+       [](const Boost& x) { return Boost(sin(x)); }},
+      {"cos", Range::kExp, [](const F& x) { return mpfix::cos(x); }, mpfr_cos,
+       [](const Boost& x) { return Boost(cos(x)); }},
+      {"tan", Range::kExp, [](const F& x) { return mpfix::tan(x); }, mpfr_tan,
+       [](const Boost& x) { return Boost(tan(x)); }},
       {"cbrt", Range::kLog, [](const F& x) { return mpfix::cbrt(x); },
        mpfr_cbrt, nullptr},
   };
