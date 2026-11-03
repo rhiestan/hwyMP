@@ -7,10 +7,8 @@
 // stream's precision, or with Eigen::FullPrecision at max_digits10, which
 // reads back exactly.
 //
-// Eigen finds abs, sqrt, exp, log, sin and the other functions of
-// mpfix/math.h, isnan, isinf and isfinite by argument-dependent lookup. The
-// inverse trigonometric functions are not provided yet, so the algorithms that
-// need them do not work with Float.
+// Eigen finds abs, sqrt, exp, log, sin, atan2 and the other functions of
+// mpfix/math.h, isnan, isinf and isfinite by argument-dependent lookup.
 
 #ifndef MPFIX_EIGEN_H_
 #define MPFIX_EIGEN_H_

@@ -204,6 +204,60 @@ TEST(Math, Trigonometric) {
   }
 }
 
+TEST(Math, InverseTrigonometric) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  const F one(1);
+  const F pi_f = pi<F>();
+  const F half_pi = scalbn(pi_f, -1);
+  EXPECT_TRUE(SameBits(asin(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(atan(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(acos(one), F::Zero()));
+  EXPECT_TRUE(SameBits(acos(-one), pi_f));
+  EXPECT_TRUE(SameBits(asin(-one), -half_pi));
+  EXPECT_TRUE(SameBits(atan(inf), half_pi));
+  EXPECT_TRUE(SameBits(atan2(F::Zero(true), -one), -pi_f));
+  EXPECT_TRUE(SameBits(atan2(F::Zero(), F::Zero(true)), pi_f));
+  EXPECT_TRUE(SameBits(atan2(F::Zero(true), F::Zero()), F::Zero(true)));
+  EXPECT_TRUE(SameBits(atan2(-one, F::Zero()), -half_pi));
+  EXPECT_TRUE(SameBits(atan2(inf, inf), scalbn(pi_f, -2)));
+  EXPECT_TRUE(SameBits(atan2(one, -inf), pi_f));
+  EXPECT_TRUE(SameBits(atan2(-one, inf), F::Zero(true)));
+
+  Context context;
+  EXPECT_TRUE(atan2(F::Zero(), one, context) == F::Zero());
+  EXPECT_TRUE(acos(one, context) == F::Zero());
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(asin(F(1.5), context).is_nan());
+  EXPECT_TRUE(acos(-inf, context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{Rounding::kUp};
+  const F tiny = F::MinSubnormal();
+  EXPECT_TRUE(SameBits(asin(tiny, context), next_up(tiny)));
+  EXPECT_TRUE(SameBits(atan(tiny, context), tiny));
+  EXPECT_EQ(context.flags, unsigned{kFlagUnderflow | kFlagInexact});
+  // atan2 of an exact tiny quotient lies just below it.
+  context = Context{Rounding::kDown};
+  const F q = scalbn(F(3), -400);
+  EXPECT_TRUE(SameBits(atan2(q, one, context), next_down(q)));
+  context = Context{Rounding::kUp};
+  EXPECT_TRUE(SameBits(atan2(q, one, context), q));
+
+  for (const double x : {-1.0, -0.999, -0.5, -1e-3, 1e-20, 0.25, 0.75, 0.99999,
+                         1.0}) {
+    EXPECT_NEAR(static_cast<double>(asin(F(x))), std::asin(x), 1e-15) << x;
+    EXPECT_NEAR(static_cast<double>(acos(F(x))), std::acos(x), 1e-15) << x;
+  }
+  for (const double x : {-1e300, -30.0, -1.0, -0.3, 1e-20, 0.5, 2.0, 1e10}) {
+    EXPECT_NEAR(static_cast<double>(atan(F(x))), std::atan(x), 1e-15) << x;
+    for (const double y : {-2.0, -1e-5, 0.5, 7.0}) {
+      EXPECT_NEAR(static_cast<double>(atan2(F(y), F(x))), std::atan2(y, x),
+                  1e-15)
+          << y << " " << x;
+    }
+  }
+}
+
 TEST(Math, Pi) {
   EXPECT_EQ(to_string(pi<binary256>()),
             to_string(from_string<binary256>(

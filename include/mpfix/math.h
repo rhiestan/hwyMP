@@ -3,9 +3,9 @@
 
 // Exponentials, logarithms, hyperbolic and trigonometric functions, powers and
 // roots: exp, exp2, expm1, log, log2, log10, log1p, sinh, cosh, tanh, asinh,
-// acosh, atanh, sin, cos, tan, pow, cbrt and hypot, and the constant pi,
-// correctly rounded in all five modes, with the IEEE 754 flags when a Context
-// is given.
+// acosh, atanh, sin, cos, tan, asin, acos, atan, atan2, pow, cbrt and hypot,
+// and the constant pi, correctly rounded in all five modes, with the IEEE 754
+// flags when a Context is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -1723,23 +1723,324 @@ F TanImpl(const F& x, const Env& env) {
   return TrigEvaluate<Trig::kTan, F, kFirstLevel>(x, env);
 }
 
-// pi rounded to F, from P + 64 bits whose last 62 are far from a rounding
-// boundary, which every value of pi's bits so far has been.
+// +-pi m 2^shift rounded to F, for m = 1 or 3, from P + 64 bits whose last 62
+// are far from a rounding boundary, which every value of pi's bits so far
+// has been.
 template <class F, class Env>
-F PiImpl(const Env& env) {
+F PiMultiple(limb_t m, int shift, bool negative, const Env& env) {
   for (std::size_t bits = F::kPrecision + 64;; bits *= 2) {
     bool decided = false;
     const F result = WithPiBits(bits + 2, [&](const PiFixedPoint& p) {
       BigUint top = p.pi;
       top.ShiftRight(p.bits - bits);  // Within 2 of pi 2^bits.
+      top.MulAdd(m, 0);               // Within 6 of pi m 2^bits.
       const limb_t low = top.limbs()[0] & ((limb_t{1} << 62) - 1);
-      decided = low >= 4 && low <= (limb_t{1} << 62) - 4;
-      return RoundInteger<F>(false, top, -static_cast<std::int64_t>(bits), true,
+      decided = low >= 8 && low <= (limb_t{1} << 62) - 8;
+      return RoundInteger<F>(negative, top,
+                             shift - static_cast<std::int64_t>(bits), true,
                              env);
     });
     if (decided) return result;
   }
 }
+
+template <class F, class Env>
+F PiImpl(const Env& env) {
+  return PiMultiple<F>(1, 0, false, env);
+}
+
+// --- Inverse trigonometric functions ---
+//
+// All four reduce to atan of a nonnegative argument: asin x =
+// atan(x / sqrt((1 - x)(1 + x))), acos x = 2 atan(sqrt((1 - x) / (1 + x)))
+// and atan2(y, x) = atan(|y / x|) in the right quadrant. None has an exact
+// result besides at 0 and, for acos, at 1: their values at other algebraic
+// arguments are transcendental.
+
+// atan t for an exact t with |t| < 1/2, with a relative error below 10 u:
+// t G(t^2) for G(y) = sum over j of (-y)^j / (2j + 1), in fixed point by
+// Paterson and Stockmeyer. In blocks of k terms, acc_b = S / D + (-y)^k
+// acc_(b+1) with D = (2bk + 1) ... (2bk + 2k - 1) and S the sum over i < k
+// of (-1)^i (D / (2bk + 2i + 1)) y^i, whose terms decrease.
+template <class W>
+W AtanSeries(const W& t) {
+  constexpr std::size_t kN = W::kLimbs;
+  // The first omitted term, j = n, is below t^2n < 2^-(kPrecision + 4)
+  // relative to t.
+  const int scale = -(t.raw_exponent() + 1);
+  const int n = (W::kPrecision + 4 + 2 * scale - 1) / (2 * scale);
+  const int k = SeriesBlock(n, std::bit_width(static_cast<unsigned>(2 * n + 1)));
+  std::array<FixedLimbs<kN>, 17> powers{};
+  powers[0][kN] = 1;
+  powers[1] = ToFixed<kN>(t * t);
+  for (int i = 2; i <= k; ++i) {
+    powers[static_cast<std::size_t>(i)] =
+        FixedMul<kN>(powers[static_cast<std::size_t>(i - 1)], powers[1]);
+  }
+  const int blocks = (n + k - 1) / k;
+  FixedLimbs<kN> acc{};
+  for (int block = blocks - 1; block >= 0; --block) {
+    const int base = block * k;
+    const int size = (std::min)(k, n - base);
+    limb_t denominator = 1;
+    for (int i = 0; i < size; ++i) {
+      denominator *= static_cast<limb_t>(2 * (base + i) + 1);
+    }
+    FixedLimbs<kN> sum{};
+    for (int i = 0; i < size; ++i) {
+      FixedAccumulate<kN>(
+          sum,
+          FixedMulSmall<kN>(powers[static_cast<std::size_t>(i)],
+                            denominator / static_cast<limb_t>(2 * (base + i) + 1)),
+          (i & 1) != 0);
+    }
+    DivideLimbs(sum.data(), kN + 1, denominator);
+    if (block < blocks - 1) {
+      FixedAccumulate<kN>(
+          sum, FixedMul<kN>(powers[static_cast<std::size_t>(size)], acc),
+          (size & 1) != 0);
+    }
+    acc = sum;
+  }
+  // G is above 0.9 and within 8 u absolute; rounding it and t G add 2 u.
+  return t * FromFixed<W, kN>(acc);
+}
+
+// atan a for a >= 0, by halving: atan a = 2 atan(a / (1 + sqrt(1 + a^2))),
+// each step within 3.5 u more. For working formats without tables, and for
+// building them.
+template <class W>
+Tracked<W> AtanByHalving(W a) {
+  if (a.is_zero()) return {a, 0};
+  const W one(1);
+  constexpr int kScale = (std::max)(2, IntegerSqrt(W::kPrecision) / 4);
+  int halvings = 0;
+  double units = 0;
+  while (a.raw_exponent() >= -kScale) {
+    a = a / (one + sqrt(one + a * a));
+    ++halvings;
+    units += 3.5;
+  }
+  return {scalbn(AtanSeries(a), halvings), units + 10};
+}
+
+// atan(i/2^7) for i in [0, 128] and atan(j/2^14) for j in [0, 64], computed in
+// twice the precision and rounded once: within 1.1 u.
+template <class W>
+struct AtanTables {
+  static constexpr int kCount1 = 129;
+  static constexpr int kCount2 = 65;
+  std::array<W, kCount1> atan1;
+  std::array<W, kCount2> atan2;
+
+  AtanTables() {
+    using Wide = Float<2 * W::kPrecision, 29>;
+    for (int i = 0; i < kCount1; ++i) {
+      atan1[static_cast<std::size_t>(i)] = FloatAccess::Convert<W>(
+          AtanByHalving(scalbn(Wide(i), -7)).value, NearestEnv{});
+    }
+    for (int j = 0; j < kCount2; ++j) {
+      atan2[static_cast<std::size_t>(j)] = FloatAccess::Convert<W>(
+          AtanByHalving(scalbn(Wide(j), -14)).value, NearestEnv{});
+    }
+  }
+};
+
+template <class W>
+const AtanTables<W>& GetAtanTables() {
+  static const AtanTables<W> tables;
+  return tables;
+}
+
+// (t - c) / (1 + t c) for a table point c, where t - c is exact, and t has a
+// relative error of `t_units`: the subtraction turns it into an absolute one.
+template <class W>
+Tracked<W> AtanStep(const Tracked<W>& t, const W& c) {
+  const W one(1);
+  const W numerator = t.value - c;
+  if (numerator.is_zero()) return {numerator, 0};
+  const double numerator_units =
+      t.value.is_zero()
+          ? 0
+          : std::ldexp(t.units,
+                       t.value.raw_exponent() + 1 - numerator.raw_exponent());
+  // The denominator is within 2 u, the quotient 1 u more.
+  return {numerator / (one + t.value * c), numerator_units + 3};
+}
+
+// atan a for an a >= 0 known within `a_units` u relative. With tables,
+// a <= 1 is reduced as a = c1 + ... with atan a = atan c1 + atan c2 + atan t,
+// for c1 = i/2^7, c2 = j/2^14 and t = (t1 - c2) / (1 + t1 c2), where
+// t1 = (a - c1) / (1 + a c1) and |t| <= 2^-15 or so; a > 1 goes through
+// pi/2 - atan(1/a).
+template <class W, bool kUseTables>
+Tracked<W> AtanNonnegative(const W& a, double a_units) {
+  const W one(1);
+  if (a.is_zero()) return {a, 0};
+  if (a > one) {
+    const Tracked<W> inner = AtanNonnegative<W, kUseTables>(one / a, a_units + 1);
+    return TrackedAdd(Tracked<W>{GetTrigConstants<W>().half_pi, 1},
+                      Tracked<W>{-inner.value, inner.units});
+  }
+  if constexpr (kUseTables) {
+    const AtanTables<W>& tables = GetAtanTables<W>();
+    // a - c1 is exact, and so is t1 - c2, both being at most half a step.
+    const int i = to_integer<int>(scalbn(a, 7), Rounding::kNearestEven);
+    Tracked<W> t{a, 0};
+    if (i != 0) t = AtanStep(t, scalbn(W(i), -7));
+    const int j = to_integer<int>(scalbn(t.value, 14), Rounding::kNearestEven);
+    if (j != 0) t = AtanStep(t, scalbn(W(j), -14));
+    Tracked<W> result{W::Zero(), 0};
+    if (!t.value.is_zero()) result = {AtanSeries(t.value), t.units + 10};
+    if (j != 0) {
+      const W part = tables.atan2[static_cast<std::size_t>(j < 0 ? -j : j)];
+      result = TrackedAdd(Tracked<W>{j < 0 ? -part : part, 1.1}, result);
+    }
+    if (i != 0) {
+      result = TrackedAdd(
+          Tracked<W>{tables.atan1[static_cast<std::size_t>(i)], 1.1}, result);
+    }
+    // A relative error e of a makes at most e in atan a.
+    result.units += a_units;
+    return result;
+  } else {
+    Tracked<W> result = AtanByHalving(a);
+    result.units += a_units;
+    return result;
+  }
+}
+
+// Rounds a value just below the exact positive v, of at most P + 1 bits, as
+// RoundBeside does for P bits.
+template <class F, class W, class Env>
+F RoundJustBelow(bool negative, const W& v, const Env& env) {
+  const W magnitude = v - scalbn(v, -(F::kPrecision + 4));  // Exact.
+  return FloatAccess::Round<F>(negative, magnitude.raw_exponent(),
+                               magnitude.raw_limbs().data(), W::kLimbs, true,
+                               env);
+}
+
+enum class InverseTrig { kAtan, kAsin, kAcos, kAtan2 };
+
+// Evaluates atan, asin, acos or atan2(y, x) for finite nonzero arguments
+// outside their special cases.
+template <InverseTrig kKind, class F, int kFirstLevel, class Env>
+F InverseTrigEvaluate(const F& x, const F& y, const Env& env) {
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
+    const W one(1);
+    const W wx = FloatAccess::Convert<W>(x, NearestEnv{});
+    Tracked<W> value{W::Zero(), 0};
+    bool negative = false;
+    if constexpr (kKind == InverseTrig::kAtan) {
+      negative = x.signbit();
+      value = AtanNonnegative<W, kFirst>(abs(wx), 0);
+    } else if constexpr (kKind == InverseTrig::kAsin) {
+      // x / sqrt((1 - |x|)(1 + |x|)): 1 - |x| is exact from 1/2 on, so the
+      // quotient is within 4 u.
+      negative = x.signbit();
+      const W a = abs(wx);
+      value = AtanNonnegative<W, kFirst>(a / sqrt((one - a) * (one + a)), 4);
+    } else if constexpr (kKind == InverseTrig::kAcos) {
+      // 2 atan(sqrt((1 - x) / (1 + x))), within 3 u before the atan.
+      value = AtanNonnegative<W, kFirst>(sqrt((one - wx) / (one + wx)), 3);
+      value.value = scalbn(value.value, 1);
+    } else {
+      // atan2(y, x) = +-atan(|y / x|), or +-(pi - atan(|y / x|)) for x < 0.
+      negative = y.signbit();
+      const W wy = FloatAccess::Convert<W>(y, NearestEnv{});
+      value = AtanNonnegative<W, kFirst>(abs(wy) / abs(wx), 1);
+      if (x.signbit()) {
+        value = TrackedAdd(
+            Tracked<W>{scalbn(GetTrigConstants<W>().half_pi, 1), 1},
+            Tracked<W>{-value.value, value.units});
+      }
+    }
+    const W signed_value = negative ? -value.value : value.value;
+    return RoundTranscendental(
+        signed_value, W::kPrecision - LostBitsWide(CeilUnits(value.units)),
+        last, env, result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F AtanImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) return x;
+  if (x.is_inf()) return PiMultiple<F>(1, -1, x.signbit(), env);
+  // atan x = x - x^3/3 + ..., always closer to zero than x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, x.signbit(), env);
+  return InverseTrigEvaluate<InverseTrig::kAtan, F, kFirstLevel>(x, x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F AsinImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) return x;
+  const F a = abs(x);
+  if (a > F(1)) return InvalidResult<F>(env);
+  if (a == F(1)) return PiMultiple<F>(1, -1, x.signbit(), env);
+  // asin x = x + x^3/6 + ..., always beyond x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, !x.signbit(), env);
+  return InverseTrigEvaluate<InverseTrig::kAsin, F, kFirstLevel>(x, x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F AcosImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (abs(x) > F(1)) return InvalidResult<F>(env);
+  if (x == F(1)) return F::Zero();
+  if (x == F(-1)) return PiMultiple<F>(1, 0, false, env);
+  return InverseTrigEvaluate<InverseTrig::kAcos, F, kFirstLevel>(x, x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F Atan2Impl(const F& y, const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  // The special cases of IEEE 754 and C99 Annex F.
+  if (y.is_nan() || x.is_nan()) return FloatAccess::PropagateNaN(y, x, env);
+  const bool negative = y.signbit();
+  if (y.is_zero()) {
+    return x.signbit() ? PiMultiple<F>(1, 0, negative, env) : y;
+  }
+  if (x.is_zero()) return PiMultiple<F>(1, -1, negative, env);
+  if (y.is_inf()) {
+    if (!x.is_inf()) return PiMultiple<F>(1, -1, negative, env);
+    return x.signbit() ? PiMultiple<F>(3, -2, negative, env)
+                       : PiMultiple<F>(1, -2, negative, env);
+  }
+  if (x.is_inf()) {
+    return x.signbit() ? PiMultiple<F>(1, 0, negative, env) : F::Zero(negative);
+  }
+  if (!x.signbit()) {
+    // For |y / x| < 2^-(1.5 P + 8), atan2 is just below the exact quotient q,
+    // by less than q 2^-(3P + 14). Truncated to P + 2 bits, q either is exact,
+    // or lies more than that above its truncation: the quotient of two P-bit
+    // numbers is farther than q 2^-(2P + 4) from any other P + 2-bit number.
+    using Q = Float<F::kPrecision + 2, 29>;
+    const std::int64_t estimate =
+        std::int64_t{y.raw_exponent()} - x.raw_exponent();
+    if (estimate < -(3 * F::kPrecision / 2 + 10)) {
+      Context context{Rounding::kTowardZero};
+      const Q q = div(abs(FloatAccess::Convert<Q>(y, NearestEnv{})),
+                      abs(FloatAccess::Convert<Q>(x, NearestEnv{})), context);
+      if ((context.flags & kFlagInexact) != 0) {
+        return FloatAccess::Round<F>(negative, q.raw_exponent(),
+                                     q.raw_limbs().data(), Q::kLimbs, true,
+                                     env);
+      }
+      return RoundJustBelow<F>(
+          negative, FloatAccess::Convert<Wide1<F>>(q, NearestEnv{}), env);
+    }
+  }
+  return InverseTrigEvaluate<InverseTrig::kAtan2, F, kFirstLevel>(x, y, env);
+}
+
+
 
 // --- Powers and roots ---
 
@@ -2204,6 +2505,50 @@ F pi() {
 template <class F>
 F pi(Context& context) {
   return detail::PiImpl<F>(detail::ContextEnv{context});
+}
+
+// The inverse tangent, in (-pi/2, pi/2); atan(+-infinity) is +-pi/2 rounded.
+template <int P, int E>
+Float<P, E> atan(const Float<P, E>& x) {
+  return detail::AtanImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> atan(const Float<P, E>& x, Context& context) {
+  return detail::AtanImpl(x, detail::ContextEnv{context});
+}
+
+// The inverse sine, in [-pi/2, pi/2]. |x| > 1 gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> asin(const Float<P, E>& x) {
+  return detail::AsinImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> asin(const Float<P, E>& x, Context& context) {
+  return detail::AsinImpl(x, detail::ContextEnv{context});
+}
+
+// The inverse cosine, in [0, pi]. |x| > 1 gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> acos(const Float<P, E>& x) {
+  return detail::AcosImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> acos(const Float<P, E>& x, Context& context) {
+  return detail::AcosImpl(x, detail::ContextEnv{context});
+}
+
+// The angle of the point (x, y), in [-pi, pi], with the special cases of
+// IEEE 754 for zeros and infinities: atan2(+-0, -0) is +-pi and
+// atan2(+-infinity, -infinity) is +-3pi/4, for example. It raises no flag for
+// zeros, and underflow for results below the normal range, as usual.
+template <int P, int E>
+Float<P, E> atan2(const Float<P, E>& y, const Float<P, E>& x) {
+  return detail::Atan2Impl(y, x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> atan2(const Float<P, E>& y, const Float<P, E>& x,
+                  Context& context) {
+  return detail::Atan2Impl(y, x, detail::ContextEnv{context});
 }
 
 // x^y, with the special cases of IEEE 754: pow(x, +-0) and pow(1, y) are 1

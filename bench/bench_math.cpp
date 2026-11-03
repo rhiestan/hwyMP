@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Single-threaded throughput of the exponentials, logarithms, hyperbolic and
-// trigonometric functions, powers and roots, on identical arguments for every
-// library, all rounding to nearest. Exponentials, sinh, cosh, tanh, asinh,
-// sin, cos and tan take arguments in (-20, 20); logarithms and cbrt take
-// positive values with binary exponents in [-20, 20), and acosh one plus
-// those; expm1 and log1p take arguments below 1/4 in magnitude, and atanh
-// below 1/2; pow takes x as for log and y as for exp. MPFR runs at the
-// format's precision; Boost.Multiprecision's cpp_bin_float is timed for exp,
-// log, the hyperbolic and trigonometric functions and pow only.
+// trigonometric functions and their inverses, powers and roots, on identical
+// arguments for every library, all rounding to nearest. Exponentials, sinh,
+// cosh, tanh, asinh, sin, cos, tan and atan take arguments in (-20, 20);
+// logarithms and cbrt take positive values with binary exponents in
+// [-20, 20), and acosh one plus those; expm1 and log1p take arguments below
+// 1/4 in magnitude, and atanh, asin and acos below 1; pow takes x as for log
+// and y as for exp. MPFR runs at the format's precision;
+// Boost.Multiprecision's cpp_bin_float is timed for exp, log, the hyperbolic
+// and trigonometric functions and their inverses, and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -164,6 +165,12 @@ void ReportFormat(const char* format) {
        [](const Boost& x) { return Boost(cos(x)); }},
       {"tan", Range::kExp, [](const F& x) { return mpfix::tan(x); }, mpfr_tan,
        [](const Boost& x) { return Boost(tan(x)); }},
+      {"asin", Range::kUnit, [](const F& x) { return mpfix::asin(x); },
+       mpfr_asin, [](const Boost& x) { return Boost(asin(x)); }},
+      {"acos", Range::kUnit, [](const F& x) { return mpfix::acos(x); },
+       mpfr_acos, [](const Boost& x) { return Boost(acos(x)); }},
+      {"atan", Range::kExp, [](const F& x) { return mpfix::atan(x); },
+       mpfr_atan, [](const Boost& x) { return Boost(atan(x)); }},
       {"cbrt", Range::kLog, [](const F& x) { return mpfix::cbrt(x); },
        mpfr_cbrt, nullptr},
   };
@@ -222,7 +229,7 @@ void ReportFormat(const char* format) {
   }
 
   // pow takes x as for log and y as for exp; hypot takes two values as for
-  // log.
+  // log; atan2(y, x) takes y as for log and x as for exp.
   struct BinaryCase {
     const char* name;
     Range y_range;
@@ -237,6 +244,9 @@ void ReportFormat(const char* format) {
       {"hypot", Range::kLog,
        [](const F& x, const F& y) { return mpfix::hypot(x, y); }, mpfr_hypot,
        nullptr},
+      {"atan2", Range::kExp,
+       [](const F& x, const F& y) { return mpfix::atan2(x, y); }, mpfr_atan2,
+       [](const Boost& x, const Boost& y) { return Boost(atan2(x, y)); }},
   };
   for (const BinaryCase& c : binary_cases) {
     const std::vector<F> xs = Arguments<F>(Range::kLog);

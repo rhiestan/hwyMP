@@ -40,8 +40,8 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    times faster than MPFR; sinh, cosh and tanh, 1.6 to 2.7 times; asinh,
    acosh and atanh, 2 to 10 times; sin, cos and tan, with exact reduction of
    any argument, 1.2 to 2.8 times; pow, 2 to 3.8 times; hypot, 1.3 to 2.9
-   times; cbrt, level with MPFR at binary512 and faster below; and pi. To do:
-   asin, acos, atan and atan2.
+   times; asin, acos, atan and atan2, 5 to 10 times; cbrt, level with MPFR
+   at binary512 and faster below; and pi. Done.
 7. Batch layer: AVX-512 IFMA only, and only if measured on real hardware, since
    AVX2 did not pay off. `FloatVec<P, E>`, dispatched kernels, tested through
    Intel SDE.

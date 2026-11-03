@@ -201,6 +201,29 @@ first 32768 bits computed on first use. They are computed once, when first
 needed, by the Chudnovsky series: 0.3 s for 2^19 bits and 8 s for 2^22,
 which binary512's largest arguments need.
 
+### Inverse trigonometric functions
+
+The same benchmark. asin and acos take arguments below 1 in magnitude, atan
+arguments as for exp, and atan2(y, x) y as for log and x as for exp.
+
+| Format | Library | asin | acos | atan | atan2 |
+|---|---|---:|---:|---:|---:|
+| binary128 | mpfix | 411 | 471 | 429 | 365 |
+| | MPFR | 2844 | 3052 | 2503 | 2859 |
+| | Boost | 10402 | 10517 | 23210 | 7868 |
+| binary256 | mpfix | 679 | 767 | 703 | 585 |
+| | MPFR | 5514 | 5746 | 7062 | 5226 |
+| | Boost | 32886 | 33354 | 61194 | 21616 |
+| binary512 | mpfix | 1663 | 1817 | 1603 | 1403 |
+| | MPFR | 9402 | 9568 | 12580 | 8754 |
+| | Boost | 177122 | 177012 | 263992 | 89099 |
+
+mpfix is 5 to 10 times faster than MPFR. All four are atan of an argument
+formed without cancellation: two steps of t = (a - c) / (1 + a c) with tables
+of atan at multiples of 2^-7 and 2^-14 leave t below 2^-15, whose series in
+t^2 runs in fixed point. Their tables take 0.25 ms at binary128 and 2 ms at
+binary512 on the first call.
+
 ### Powers and roots
 
 The same benchmark. pow takes x as for log and y as for exp; cbrt takes values
