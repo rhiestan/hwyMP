@@ -91,14 +91,36 @@ Eigen::Dynamic>` works with the same decompositions and with `ComplexSchur` and
 `EigenSolver`, are `std::complex<F>` in Eigen; see
 [docs/COMPLEX.md](docs/COMPLEX.md).
 
+### With Boost.Multiprecision
+
+`mpfix/boost.h` makes Float a backend of `boost::multiprecision::number`, for
+code written for Boost's types, and for Boost.Math:
+
+```cpp
+#include "mpfix/boost.h"  // Needs Boost 1.79 or later, or standalone Boost.Multiprecision.
+
+mpfix::boost_binary256 x = 2;
+mpfix::boost_binary256 y = sqrt(x) + boost::multiprecision::erf(x);
+std::cout << std::setprecision(70) << y << '
+';
+```
+
+`boost_binary128`, `boost_binary256` and `boost_binary512` give exactly Float's
+results: arithmetic, `sqrt`, `fma`, `fmod`, the rounding functions and all of
+the functions of `mpfix/math.h` stay correctly rounded rather than going to
+Boost's generic code or Boost.Math. Expression templates are off by default;
+`number<mpfix::boost_backend<P, E>, et_on>` works too. Boost is not a
+dependency of the library; only this header needs it.
+
 ## Building
 
 The library is header-only and needs nothing but a C++20 compiler: add
 `include/` to the include path, or link the CMake target `mpfix::mpfix`.
 
 The tests need CMake 3.25 or later and Ninja. A sibling `../eigen` checkout is
-used when present, and `../highway` for the batch benchmark; otherwise they are
-downloaded.
+used when present, `../boost_1_92_0` for the Boost test and the benchmarks, and
+`../highway` for the batch benchmark; otherwise Eigen, the standalone
+Boost.Multiprecision and Highway are downloaded.
 
 On Windows, run from a Visual Studio 2022 developer prompt with `VCPKG_ROOT` set.
 vcpkg builds GMP, MPFR and MPC, which only the tests use:

@@ -54,7 +54,12 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    Complex<F> as a complex scalar. What std::complex<Float> gives with
    libstdc++, libc++ and MSVC's STL is in docs/COMPLEX.md, probed by
    std_complex_test. Done.
-8. Hardening and release: long differential runs, TestFloat, sanitizers,
+8. Boost.Multiprecision: `mpfix/boost.h` with `mpfix::boost_backend<P, E>`, a
+   backend of `boost::multiprecision::number` whose arithmetic and functions
+   are Float's, correctly rounded, also those Boost would compute with
+   Boost.Math, and std::numeric_limits for the numbers. Tested with Boost
+   1.92, with Boost.Math, and with the standalone Boost.Multiprecision. Done.
+9. Hardening and release: long differential runs, TestFloat, sanitizers,
    fuzzing, and a benchmark report.
 
 ## Postponed

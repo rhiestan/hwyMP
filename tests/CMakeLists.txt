@@ -20,6 +20,24 @@ FetchContent_MakeAvailable(eigen googletest)
 add_library(mpfix_eigen INTERFACE)
 target_include_directories(mpfix_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
 
+# Boost.Multiprecision for the test of mpfix/boost.h: a sibling Boost tree, with
+# Boost.Math, when there is one, otherwise the standalone Boost.Multiprecision.
+get_filename_component(mpfix_parent_dir "${PROJECT_SOURCE_DIR}" DIRECTORY)
+set(MPFIX_BOOST_DIR "${mpfix_parent_dir}/boost_1_92_0" CACHE PATH
+    "Boost source tree used by the benchmarks and the Boost test")
+add_library(mpfix_boost INTERFACE)
+if(MPFIX_USE_LOCAL_DEPS AND EXISTS "${MPFIX_BOOST_DIR}/boost/multiprecision/number.hpp")
+  target_include_directories(mpfix_boost SYSTEM INTERFACE "${MPFIX_BOOST_DIR}")
+else()
+  FetchContent_Declare(boost_multiprecision
+    GIT_REPOSITORY https://github.com/boostorg/multiprecision.git
+    GIT_TAG Boost_1_92_0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR do-not-configure)
+  FetchContent_MakeAvailable(boost_multiprecision)
+  target_include_directories(mpfix_boost SYSTEM INTERFACE
+    "${boost_multiprecision_SOURCE_DIR}/include")
+endif()
 include(GoogleTest)
 
 function(mpfix_add_test name)
@@ -48,6 +66,7 @@ mpfix_add_test(std_complex_test mpfix_eigen)
 mpfix_add_test(windows_header_test)
 mpfix_add_test(deps_smoke_test mpfix_eigen)
 mpfix_add_test(eigen_test mpfix_eigen)
+mpfix_add_test(boost_test mpfix_boost)
 
 if(MPFIX_ENABLE_ORACLE)
   find_path(MPFIX_GMP_INCLUDE_DIR gmp.h REQUIRED)
