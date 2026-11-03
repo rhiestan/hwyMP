@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
 // Exponentials, logarithms, hyperbolic functions, powers and roots: exp, exp2,
-// expm1, log, log2, log10, log1p, sinh, cosh, tanh, pow, cbrt and hypot,
-// correctly rounded in all five modes, with the IEEE 754 flags when a Context
-// is given.
+// expm1, log, log2, log10, log1p, sinh, cosh, tanh, asinh, acosh, atanh, pow,
+// cbrt and hypot, correctly rounded in all five modes, with the IEEE 754 flags
+// when a Context is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -891,9 +891,9 @@ F Log1pImpl(const F& x, const Env& env) {
 
 // --- Hyperbolic functions ---
 //
-// All three take e^a for a = |x| from the exponential's kernel, and none has
-// an exact result besides sinh(0), cosh(0) and tanh(0), since e^a is
-// transcendental for every rational a != 0.
+// sinh, cosh and tanh take e^a for a = |x| from the exponential's kernel, and
+// none has an exact result besides sinh(0), cosh(0) and tanh(0), since e^a is
+// transcendental for every rational a != 0. Their inverses are logarithms.
 
 // Whether x^2 < 2^-(P + 2), so that sinh, cosh and tanh differ from x, 1 and x
 // by less than their value times 2^-(P + 2).
@@ -960,28 +960,113 @@ W TanhKernel(const W& a, int& units) {
   return q / (q + W(2));
 }
 
-enum class Hyperbolic { kSinh, kCosh, kTanh };
+// log z for z = 1 + d > 1 known to within 4 u relative, with a relative
+// error below `units` * u. `small_d()` gives d to within 4 u relative; it is
+// only called for d below about 2^-8, where log z is evaluated as log1p(d).
+template <class W, bool kUseTables, class SmallD>
+W LogOfInexact(const W& z, const SmallD& small_d, std::int64_t& units) {
+  constexpr std::int64_t kInputUnits = 4;
+  const W one(1);
+  int kernel_units;
+  if ((z - one).raw_exponent() < -8) {
+    // A relative error of d carries over to log1p(d) at most as large.
+    const W y = Log1pKernel(small_d(), kernel_units);
+    units = kernel_units + kInputUnits + 1;
+    return y;
+  }
+  // z has more bits than the tables' reduction keeps exact, so its two
+  // products each round, by below 1 u relative: an absolute error below 2 u
+  // in log z, besides the kernel's.
+  std::int64_t e;
+  W log_m;
+  const W y = LogKernel<W, kUseTables>(z, kernel_units, e, log_m);
+  constexpr std::int64_t kReductionUnits = kUseTables ? 2 : 0;
+  // A relative error below delta in z is an absolute one below delta in
+  // log z, and log z >= 2^raw_exponent, above 2^-10 here.
+  const int shift = (std::max)(0, -y.raw_exponent());
+  units = kernel_units + ((kInputUnits + kReductionUnits + 1) << shift);
+  return y;
+}
 
-// Evaluates sinh, cosh or tanh of |x| and rounds it, with the sign of x for
-// sinh and tanh.
+// asinh a, acosh a and atanh a, for a finite a > 0, a > 1 for acosh and
+// a < 1 for atanh, with a relative error below `units` * u. The first working
+// format reduces through tables.
+template <class W, bool kUseTables>
+W AsinhKernel(const W& a, std::int64_t& units) {
+  const W one(1);
+  const W a2 = a * a;
+  if (a < one) {
+    // asinh a = log1p(d) for d = a + a^2 / (1 + sqrt(1 + a^2)), within 2 u,
+    // and 1 + d within 3 u.
+    const W d = a + a2 / (one + sqrt(one + a2));
+    return LogOfInexact<W, kUseTables>(one + d, [&] { return d; }, units);
+  }
+  // log(a + sqrt(a^2 + 1)), a sum of positive terms within 3 u.
+  const W z = a + sqrt(a2 + one);
+  return LogOfInexact<W, kUseTables>(z, [&] { return z - one; }, units);
+}
+
+template <class W, bool kUseTables>
+W AcoshKernel(const W& a, std::int64_t& units) {
+  const W one(1);
+  if (a < W(2)) {
+    // acosh a = log1p(d) for d = t + sqrt(t (t + 2)), t = a - 1 exact, which
+    // cancels nothing: d is within 2 u, and 1 + d within 3 u.
+    const W t = a - one;
+    const W d = t + sqrt(t * (t + W(2)));
+    return LogOfInexact<W, kUseTables>(one + d, [&] { return d; }, units);
+  }
+  // log(a + sqrt(a^2 - 1)): the subtraction loses at most a factor of 4/3,
+  // and the sum is within 3 u.
+  const W z = a + sqrt(a * a - one);
+  return LogOfInexact<W, kUseTables>(z, [&] { return z - one; }, units);
+}
+
+template <class W, bool kUseTables>
+W AtanhKernel(const W& a, std::int64_t& units) {
+  // atanh a = log((1 + a) / (1 - a)) / 2 = log1p(2a / (1 - a)) / 2, with the
+  // quotients within 2 u.
+  const W one(1);
+  const W below = one - a;
+  const W z = (one + a) / below;
+  return scalbn(LogOfInexact<W, kUseTables>(
+                    z, [&] { return scalbn(a, 1) / below; }, units),
+                -1);
+}
+
+enum class Hyperbolic { kSinh, kCosh, kTanh, kAsinh, kAcosh, kAtanh };
+
+// Evaluates a hyperbolic function of |x| and rounds it, with the sign of x
+// for the odd functions.
 template <Hyperbolic kKind, class F, int kFirstLevel, class Env>
 F HyperbolicEvaluate(const F& x, const Env& env) {
-  const bool negative = kKind != Hyperbolic::kCosh && x.signbit();
+  const bool negative = kKind != Hyperbolic::kCosh &&
+                        kKind != Hyperbolic::kAcosh && x.signbit();
   return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
     using W = typename decltype(tag)::type;
     constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
     const W a = abs(FloatAccess::Convert<W>(x, NearestEnv{}));
-    int units;
+    std::int64_t units;
     W y;
-    if constexpr (kKind == Hyperbolic::kSinh) {
-      y = SinhKernel<W, kFirst>(a, units);
-    } else if constexpr (kKind == Hyperbolic::kCosh) {
-      y = CoshKernel<W, kFirst>(a, units);
+    if constexpr (kKind == Hyperbolic::kAsinh) {
+      y = AsinhKernel<W, kFirst>(a, units);
+    } else if constexpr (kKind == Hyperbolic::kAcosh) {
+      y = AcoshKernel<W, kFirst>(a, units);
+    } else if constexpr (kKind == Hyperbolic::kAtanh) {
+      y = AtanhKernel<W, kFirst>(a, units);
     } else {
-      y = TanhKernel<W, kFirst>(a, units);
+      int small_units;
+      if constexpr (kKind == Hyperbolic::kSinh) {
+        y = SinhKernel<W, kFirst>(a, small_units);
+      } else if constexpr (kKind == Hyperbolic::kCosh) {
+        y = CoshKernel<W, kFirst>(a, small_units);
+      } else {
+        y = TanhKernel<W, kFirst>(a, small_units);
+      }
+      units = small_units;
     }
     return RoundTranscendental(negative ? -y : y,
-                               W::kPrecision - LostBits(units), last, env,
+                               W::kPrecision - LostBitsWide(units), last, env,
                                result);
   });
 }
@@ -1025,6 +1110,47 @@ F TanhImpl(const F& x, const Env& env) {
     return RoundBeside(negative ? F(-1) : F(1), negative, env);
   }
   return HyperbolicEvaluate<Hyperbolic::kTanh, F, kFirstLevel>(x, env);
+}
+
+// asinh, acosh and atanh have no exact results besides asinh(0), acosh(1)
+// and atanh(0): their values at algebraic arguments are transcendental.
+
+template <class F, class Env, int kFirstLevel = 1>
+F AsinhImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf() || x.is_zero()) return x;
+  // asinh x = x - x^3/6 + ..., always closer to zero than x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, x.signbit(), env);
+  return HyperbolicEvaluate<Hyperbolic::kAsinh, F, kFirstLevel>(x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F AcoshImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  const F one(1);
+  if (x < one) return InvalidResult<F>(env);
+  if (x == one) return F::Zero();
+  if (x.is_inf()) return x;
+  return HyperbolicEvaluate<Hyperbolic::kAcosh, F, kFirstLevel>(x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F AtanhImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) return x;
+  const F a = abs(x);
+  const F one(1);
+  if (a == one) {
+    env.raise(kFlagDivByZero);
+    return F::Infinity(x.signbit());
+  }
+  if (a > one) return InvalidResult<F>(env);
+  // atanh x = x + x^3/3 + ..., always beyond x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, !x.signbit(), env);
+  return HyperbolicEvaluate<Hyperbolic::kAtanh, F, kFirstLevel>(x, env);
 }
 
 // --- Powers and roots ---
@@ -1417,6 +1543,37 @@ Float<P, E> tanh(const Float<P, E>& x) {
 template <int P, int E>
 Float<P, E> tanh(const Float<P, E>& x, Context& context) {
   return detail::TanhImpl(x, detail::ContextEnv{context});
+}
+
+// The inverse hyperbolic sine.
+template <int P, int E>
+Float<P, E> asinh(const Float<P, E>& x) {
+  return detail::AsinhImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> asinh(const Float<P, E>& x, Context& context) {
+  return detail::AsinhImpl(x, detail::ContextEnv{context});
+}
+
+// The inverse hyperbolic cosine. x < 1 gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> acosh(const Float<P, E>& x) {
+  return detail::AcoshImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> acosh(const Float<P, E>& x, Context& context) {
+  return detail::AcoshImpl(x, detail::ContextEnv{context});
+}
+
+// The inverse hyperbolic tangent. atanh(+-1) is +-infinity and raises divide
+// by zero, and |x| > 1 gives NaN and raises invalid.
+template <int P, int E>
+Float<P, E> atanh(const Float<P, E>& x) {
+  return detail::AtanhImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> atanh(const Float<P, E>& x, Context& context) {
+  return detail::AtanhImpl(x, detail::ContextEnv{context});
 }
 
 // x^y, with the special cases of IEEE 754: pow(x, +-0) and pow(1, y) are 1

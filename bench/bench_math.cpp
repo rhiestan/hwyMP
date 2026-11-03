@@ -3,12 +3,13 @@
 
 // Single-threaded throughput of the exponentials, logarithms, hyperbolic
 // functions, powers and roots, on identical arguments for every library, all
-// rounding to nearest. Exponentials and the hyperbolic functions take
+// rounding to nearest. Exponentials, sinh, cosh, tanh and asinh take
 // arguments in (-20, 20); logarithms and cbrt take positive values with binary
-// exponents in [-20, 20); expm1 and log1p take arguments below 1/4 in
-// magnitude; pow takes x as for log and y as for exp. MPFR runs at the
-// format's precision; Boost.Multiprecision's cpp_bin_float is timed for exp,
-// log, the hyperbolic functions and pow only.
+// exponents in [-20, 20), and acosh one plus those; expm1 and log1p take
+// arguments below 1/4 in magnitude, and atanh below 1/2; pow takes x as for
+// log and y as for exp. MPFR runs at the format's precision;
+// Boost.Multiprecision's cpp_bin_float is timed for exp, log, the hyperbolic
+// functions and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -58,7 +59,7 @@ double BestNanoseconds(Pass pass, int operations) {
   return best;
 }
 
-enum class Range { kExp, kLog, kSmall };
+enum class Range { kExp, kLog, kSmall, kAboveOne, kUnit };
 
 template <class F>
 std::vector<F> Arguments(Range range) {
@@ -81,6 +82,14 @@ std::vector<F> Arguments(Range range) {
         break;
       case Range::kSmall:
         value = F::FromRaw(negative, -3 - static_cast<int>(Mix(state) % 20),
+                           limbs);
+        break;
+      case Range::kAboveOne:
+        value = F(1) + F::FromRaw(false, static_cast<int>(Mix(state) % 40) - 20,
+                                  limbs);
+        break;
+      case Range::kUnit:
+        value = F::FromRaw(negative, -1 - static_cast<int>(Mix(state) % 20),
                            limbs);
         break;
     }
@@ -140,6 +149,12 @@ void ReportFormat(const char* format) {
        mpfr_cosh, [](const Boost& x) { return Boost(cosh(x)); }},
       {"tanh", Range::kExp, [](const F& x) { return mpfix::tanh(x); },
        mpfr_tanh, [](const Boost& x) { return Boost(tanh(x)); }},
+      {"asinh", Range::kExp, [](const F& x) { return mpfix::asinh(x); },
+       mpfr_asinh, [](const Boost& x) { return Boost(asinh(x)); }},
+      {"acosh", Range::kAboveOne, [](const F& x) { return mpfix::acosh(x); },
+       mpfr_acosh, [](const Boost& x) { return Boost(acosh(x)); }},
+      {"atanh", Range::kUnit, [](const F& x) { return mpfix::atanh(x); },
+       mpfr_atanh, [](const Boost& x) { return Boost(atanh(x)); }},
       {"cbrt", Range::kLog, [](const F& x) { return mpfix::cbrt(x); },
        mpfr_cbrt, nullptr},
   };

@@ -167,6 +167,52 @@ TEST(Math, Hyperbolic) {
   }
 }
 
+TEST(Math, InverseHyperbolic) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  const F one(1);
+  EXPECT_TRUE(SameBits(asinh(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(atanh(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(acosh(one), F::Zero()));
+  EXPECT_TRUE(SameBits(asinh(-inf), -inf));
+  EXPECT_TRUE(SameBits(acosh(inf), inf));
+
+  Context context;
+  EXPECT_TRUE(asinh(F::QuietNaN(), context).is_nan());
+  EXPECT_TRUE(acosh(one, context) == F::Zero());
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(SameBits(atanh(-one, context), -inf));
+  EXPECT_EQ(context.flags, unsigned{kFlagDivByZero});
+  context = Context{};
+  EXPECT_TRUE(acosh(F(0.5), context).is_nan());
+  EXPECT_TRUE(acosh(-inf, context).is_nan());
+  EXPECT_TRUE(atanh(F(1.5), context).is_nan());
+  EXPECT_TRUE(atanh(inf, context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{Rounding::kUp};
+  const F tiny = F::MinSubnormal();
+  EXPECT_TRUE(SameBits(asinh(tiny, context), tiny));
+  EXPECT_TRUE(SameBits(atanh(tiny, context), next_up(tiny)));
+  EXPECT_EQ(context.flags, unsigned{kFlagUnderflow | kFlagInexact});
+  // No overflow at the largest finite value.
+  EXPECT_NEAR(static_cast<double>(asinh(F::MaxFinite())), 11357.21655, 1e-4);
+  EXPECT_NEAR(static_cast<double>(acosh(F::MaxFinite())), 11357.21655, 1e-4);
+
+  for (const double x : {-30.0, -2.0, -0.5, -1e-3, 1e-20, 0.25, 0.75, 0.999,
+                         1.0, 1.0 + 1e-12, 1.5, 2.0, 5.0, 1e10, 1e300}) {
+    EXPECT_NEAR(static_cast<double>(asinh(F(x))), std::asinh(x),
+                std::abs(std::asinh(x)) * 1e-15);
+    if (x > 1) {
+      EXPECT_NEAR(static_cast<double>(acosh(F(x))), std::acosh(x),
+                  std::acosh(x) * 1e-15);
+    }
+    if (std::abs(x) < 1) {
+      EXPECT_NEAR(static_cast<double>(atanh(F(x))), std::atanh(x),
+                  std::abs(std::atanh(x)) * 1e-15);
+    }
+  }
+}
+
 TEST(Math, PowSpecialValues) {
   using F = binary128;
   const F inf = F::Infinity();

@@ -152,22 +152,25 @@ neither nearly all zeros nor nearly all ones, the value rounds directly.
 
 ### Hyperbolic functions
 
-The same benchmark, with arguments as for exp.
+The same benchmark. sinh, cosh, tanh and asinh take arguments as for exp,
+acosh one plus values as for log, and atanh arguments below 1/2 in magnitude.
 
-| Format | Library | sinh | cosh | tanh |
-|---|---|---:|---:|---:|
-| binary128 | mpfix | 661 | 717 | 670 |
-| | MPFR | 1691 | 1555 | 1345 |
-| | Boost | 6682 | 6441 | 5939 |
-| binary256 | mpfix | 1190 | 1184 | 1196 |
-| | MPFR | 1964 | 1874 | 1969 |
-| | Boost | 18676 | 18633 | 19067 |
-| binary512 | mpfix | 2849 | 2833 | 2907 |
-| | MPFR | 3351 | 3366 | 3417 |
-| | Boost | 82110 | 82311 | 83283 |
+| Format | Library | sinh | cosh | tanh | asinh | acosh | atanh |
+|---|---|---:|---:|---:|---:|---:|---:|
+| binary128 | mpfix | 641 | 643 | 654 | 507 | 514 | 410 |
+| | MPFR | 1275 | 1259 | 1349 | 2156 | 3305 | 3946 |
+| | Boost | 5653 | 5628 | 5859 | 7291 | 7313 | 8182 |
+| binary256 | mpfix | 1185 | 1167 | 1190 | 975 | 994 | 840 |
+| | MPFR | 1941 | 1856 | 1946 | 3511 | 5100 | 8853 |
+| | Boost | 18533 | 18523 | 18953 | 18656 | 17638 | 20389 |
+| binary512 | mpfix | 2830 | 2813 | 2848 | 2614 | 2655 | 2443 |
+| | MPFR | 3333 | 3316 | 3400 | 5462 | 7919 | 12250 |
+| | Boost | 81257 | 81282 | 82373 | 64776 | 69365 | 77585 |
 
-All three take e^|x| from the exponential's kernel and cost about as much as
-exp, with one division more; they are 1.2 to 2.6 times faster than MPFR.
+sinh, cosh and tanh take e^|x| from the exponential's kernel and cost about as
+much as exp, with one division more; they are 1.2 to 2 times faster than MPFR.
+asinh, acosh and atanh are logarithms of arguments formed without
+cancellation, through the same tables as log, and 2 to 10 times faster.
 
 ### Powers and roots
 

@@ -24,9 +24,9 @@ std::cout << std::setprecision(40) << y << '\n';
 ```
 
 `mpfix/math.h` adds `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`,
-`sinh`, `cosh`, `tanh`, `pow`, `cbrt` and `hypot`, correctly rounded in every
-mode, with an optional `Context` for the mode and flags. Exact results, such as
-`pow(9, 1.5)`, raise no flags:
+`sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `pow`, `cbrt` and `hypot`,
+correctly rounded in every mode, with an optional `Context` for the mode and
+flags. Exact results, such as `pow(9, 1.5)`, raise no flags:
 
 ```cpp
 #include "mpfix/math.h"

@@ -29,13 +29,17 @@ enum class Function {
   kLog1p,
   kSinh,
   kCosh,
-  kTanh
+  kTanh,
+  kAsinh,
+  kAcosh,
+  kAtanh
 };
 
 constexpr Function kFunctions[] = {
-    Function::kExp,   Function::kExp2, Function::kExpm1, Function::kLog,
+    Function::kExp,   Function::kExp2,  Function::kExpm1, Function::kLog,
     Function::kLog2,  Function::kLog10, Function::kLog1p, Function::kSinh,
-    Function::kCosh,  Function::kTanh};
+    Function::kCosh,  Function::kTanh,  Function::kAsinh, Function::kAcosh,
+    Function::kAtanh};
 
 const char* Name(Function f) {
   switch (f) {
@@ -59,6 +63,12 @@ const char* Name(Function f) {
       return "cosh";
     case Function::kTanh:
       return "tanh";
+    case Function::kAsinh:
+      return "asinh";
+    case Function::kAcosh:
+      return "acosh";
+    case Function::kAtanh:
+      return "atanh";
   }
   return "";
 }
@@ -85,6 +95,12 @@ int ApplyMpfr(Function f, mpfr_ptr result, mpfr_srcptr x, mpfr_rnd_t rnd) {
       return mpfr_cosh(result, x, rnd);
     case Function::kTanh:
       return mpfr_tanh(result, x, rnd);
+    case Function::kAsinh:
+      return mpfr_asinh(result, x, rnd);
+    case Function::kAcosh:
+      return mpfr_acosh(result, x, rnd);
+    case Function::kAtanh:
+      return mpfr_atanh(result, x, rnd);
   }
   return 0;
 }
@@ -115,6 +131,12 @@ F ApplyMpfix(Function f, const F& x, Context& context) {
         return cosh(x, context);
       case Function::kTanh:
         return tanh(x, context);
+      case Function::kAsinh:
+        return asinh(x, context);
+      case Function::kAcosh:
+        return acosh(x, context);
+      case Function::kAtanh:
+        return atanh(x, context);
     }
   } else {
     using Env = detail::ContextEnv;
@@ -140,6 +162,12 @@ F ApplyMpfix(Function f, const F& x, Context& context) {
         return detail::CoshImpl<F, Env, kLevel>(x, env);
       case Function::kTanh:
         return detail::TanhImpl<F, Env, kLevel>(x, env);
+      case Function::kAsinh:
+        return detail::AsinhImpl<F, Env, kLevel>(x, env);
+      case Function::kAcosh:
+        return detail::AcoshImpl<F, Env, kLevel>(x, env);
+      case Function::kAtanh:
+        return detail::AtanhImpl<F, Env, kLevel>(x, env);
     }
   }
   return x;
@@ -168,6 +196,12 @@ F ApplyMpfix(Function f, const F& x) {
       return cosh(x);
     case Function::kTanh:
       return tanh(x);
+    case Function::kAsinh:
+      return asinh(x);
+    case Function::kAcosh:
+      return acosh(x);
+    case Function::kAtanh:
+      return atanh(x);
   }
   return x;
 }
@@ -183,6 +217,9 @@ Expected<F> ExpectedResult(Function f, const F& x, Rounding mode) {
   if ((is_log && x.is_zero()) ||
       (f == Function::kLog1p && x == F(-1))) {
     return {F::Infinity(true), unsigned{kFlagDivByZero}};
+  }
+  if (f == Function::kAtanh && abs(x) == F(1)) {
+    return {F::Infinity(x.signbit()), unsigned{kFlagDivByZero}};
   }
   const View<F> view(x);
   const auto apply = [&](mpfr_ptr result, mpfr_rnd_t rnd) {
@@ -250,7 +287,7 @@ TEST(MathOracle, ExhaustiveSmallFormats) {
 // Arguments where the functions do something interesting: around zero, where
 // they are linear, out to where they overflow, and near one for logarithms.
 template <class F>
-F RandomArgument(Function f, Random& random) {
+F RandomRawArgument(Function f, Random& random) {
   const bool negative = random.Below(2) != 0;
   const auto regular = [&](std::int32_t exponent) {
     return MakeRegular<F>(negative, exponent, RandomSignificand<F>(random));
@@ -288,6 +325,18 @@ F RandomArgument(Function f, Random& random) {
                      (F::kPrecision + 8));
     }
   }
+}
+
+// Mostly within the domains of acosh and atanh, keeping arguments near one
+// there.
+template <class F>
+F RandomArgument(Function f, Random& random) {
+  F x = RandomRawArgument<F>(f, random);
+  if (random.Below(4) != 0) {
+    if (f == Function::kAcosh && x < F(1)) x = F(2) - x;
+    if (f == Function::kAtanh && abs(x) > F(1)) x = F(1) / x;
+  }
+  return x;
 }
 
 template <class F, int kLevel = 1>
@@ -442,8 +491,8 @@ void CheckTableExpBounds(int iterations, limb_t seed) {
   }
 }
 
-// sinh, cosh and tanh of a > 0 in the working format W of F, with or without
-// tables, against their claimed bounds.
+// The hyperbolic functions and their inverses in the working format W of F,
+// with or without tables, against their claimed bounds.
 template <class F, class W>
 void CheckHyperbolicBounds(int iterations, limb_t seed) {
   constexpr bool kTables = std::is_same_v<W, detail::MathWorking<F, 1>>;
@@ -452,7 +501,8 @@ void CheckHyperbolicBounds(int iterations, limb_t seed) {
   Mpfr exact(precision);
   Mpfr error(precision);
   Mpfr bound(precision);
-  const auto check = [&](const char* name, const W& a, const W& y, int units,
+  const auto check = [&](const char* name, const W& a, const W& y,
+                         std::int64_t units,
                          int (*reference)(mpfr_ptr, mpfr_srcptr, mpfr_rnd_t)) {
     const View<W> view(a);
     reference(exact.get(), view.get(), MPFR_RNDN);
@@ -460,7 +510,8 @@ void CheckHyperbolicBounds(int iterations, limb_t seed) {
     mpfr_sub(error.get(), y_view.get(), exact.get(), MPFR_RNDN);
     mpfr_abs(error.get(), error.get(), MPFR_RNDN);
     mpfr_mul_2si(bound.get(), exact.get(), -W::kPrecision, MPFR_RNDN);
-    mpfr_mul_si(bound.get(), bound.get(), units, MPFR_RNDN);
+    mpfr_mul_d(bound.get(), bound.get(), static_cast<double>(units),
+               MPFR_RNDN);
     mpfr_abs(bound.get(), bound.get(), MPFR_RNDN);
     EXPECT_LE(mpfr_cmp(error.get(), bound.get()), 0)
         << name << " P=" << W::kPrecision << " tables=" << kTables
@@ -475,10 +526,12 @@ void CheckHyperbolicBounds(int iterations, limb_t seed) {
             : static_cast<std::int32_t>(random.Below(
                   static_cast<limb_t>(F::kPrecision / 2 + 14))) -
                   F::kPrecision / 2;
-    const W a = detail::FloatAccess::Convert<W>(
-        MakeRegular<F>(false, (std::min)(exponent, F::kEmax - 1),
-                       RandomSignificand<F>(random)),
-        detail::NearestEnv{});
+    const F value = MakeRegular<F>(false, (std::min)(exponent, F::kEmax - 1),
+                                   RandomSignificand<F>(random));
+    const auto wide = [](const F& v) {
+      return detail::FloatAccess::Convert<W>(v, detail::NearestEnv{});
+    };
+    const W a = wide(value);
     int units = 0;
     W y = detail::SinhKernel<W, kTables>(a, units);
     check("sinh", a, y, units, mpfr_sinh);
@@ -487,6 +540,21 @@ void CheckHyperbolicBounds(int iterations, limb_t seed) {
     if (a < W(F::kPrecision / 2 + 2)) {
       y = detail::TanhKernel<W, kTables>(a, units);
       check("tanh", a, y, units, mpfr_tanh);
+    }
+
+    std::int64_t wide_units = 0;
+    y = detail::AsinhKernel<W, kTables>(a, wide_units);
+    check("asinh", a, y, wide_units, mpfr_asinh);
+    // Above one for acosh, below for atanh, often next to one.
+    const F above = value < F(1) ? F(1) + value : value;
+    if (above != F(1)) {
+      y = detail::AcoshKernel<W, kTables>(wide(above), wide_units);
+      check("acosh", wide(above), y, wide_units, mpfr_acosh);
+    }
+    const F below = value < F(1) ? value : F(1) - F(1) / value;
+    if (below != F(0) && below < F(1)) {
+      y = detail::AtanhKernel<W, kTables>(wide(below), wide_units);
+      check("atanh", wide(below), y, wide_units, mpfr_atanh);
     }
   }
 }
