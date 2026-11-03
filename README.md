@@ -47,6 +47,24 @@ binary256 p = mpfix::pi<binary256>();
 The formats are `binary128`, `binary256` and `binary512`, or any
 `mpfix::Float<P, E>`. `std::numeric_limits` is specialized for all of them.
 
+### Complex numbers
+
+`mpfix/complex.h` adds `mpfix::Complex<F>`, with `complex128`, `complex256` and
+`complex512`, which has the interface of `std::complex` and the special values
+of C99 Annex G. `std::complex<T>` is unspecified for T other than the built-in
+types, and MSVC's standard library computes its functions in double.
+Addition, subtraction, multiplication, `abs`, `arg` and `norm` are correctly
+rounded in each component; division, `sqrt`, `exp`, `log`, `log10` and the
+trigonometric and hyperbolic functions are within half an ulp plus a tiny
+fraction:
+
+```cpp
+#include "mpfix/complex.h"
+
+mpfix::complex256 z(mpfix::binary256(1), mpfix::binary256(2));
+mpfix::complex256 w = mpfix::exp(z) / mpfix::sqrt(z);
+```
+
 ### With Eigen
 
 ```cpp
@@ -75,7 +93,7 @@ used when present, and `../highway` for the batch benchmark; otherwise they are
 downloaded.
 
 On Windows, run from a Visual Studio 2022 developer prompt with `VCPKG_ROOT` set.
-vcpkg builds GMP and MPFR, which only the tests use:
+vcpkg builds GMP, MPFR and MPC, which only the tests use:
 
 ```
 cmake --preset windows-clang
@@ -83,7 +101,7 @@ cmake --build --preset windows-clang
 ctest --preset windows-clang
 ```
 
-On Linux and macOS, install GMP and MPFR with your package manager:
+On Linux and macOS, install GMP, MPFR and MPC with your package manager:
 
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMPFIX_ENABLE_ORACLE=ON
@@ -93,5 +111,5 @@ ctest --test-dir build --output-on-failure
 
 ## Licence
 
-Apache-2.0 OR BSD-3-Clause. See [LICENSE](LICENSE). GMP and MPFR are used only by
-tests and benchmarks and are not part of the library.
+Apache-2.0 OR BSD-3-Clause. See [LICENSE](LICENSE). GMP, MPFR and MPC are used
+only by tests and benchmarks and are not part of the library.

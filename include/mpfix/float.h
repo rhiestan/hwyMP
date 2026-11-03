@@ -433,63 +433,78 @@ class Float {
 
   // --- Special values ---
 
-  static Float Zero(bool negative = false) noexcept {
+  static constexpr Float Zero(bool negative = false) noexcept {
     return FromParts(negative, kExpZero, Limbs{});
   }
 
-  static Float Infinity(bool negative = false) noexcept {
+  static constexpr Float Infinity(bool negative = false) noexcept {
     return FromParts(negative, kExpInfinity, TopBitOnly());
   }
 
-  static Float QuietNaN(bool negative = false) noexcept {
+  static constexpr Float QuietNaN(bool negative = false) noexcept {
     Limbs limbs = TopBitOnly();
     SetQuietBit(limbs);
     return FromParts(negative, kExpNaN, limbs);
   }
 
   // The signaling NaN whose payload has only its lowest bit set.
-  static Float SignalingNaN(bool negative = false) noexcept {
+  static constexpr Float SignalingNaN(bool negative = false) noexcept {
     Limbs limbs = TopBitOnly();
     limbs[0] |= limb_t{1} << kSpareBits;
     return FromParts(negative, kExpNaN, limbs);
   }
 
-  static Float MaxFinite(bool negative = false) noexcept {
+  static constexpr Float MaxFinite(bool negative = false) noexcept {
     return FromParts(negative, kEmax, AllOnes());
   }
 
-  static Float MinNormal(bool negative = false) noexcept {
+  static constexpr Float MinNormal(bool negative = false) noexcept {
     return FromParts(negative, kEmin, TopBitOnly());
   }
 
-  static Float MinSubnormal(bool negative = false) noexcept {
+  static constexpr Float MinSubnormal(bool negative = false) noexcept {
     return FromParts(negative, kEmin - (P - 1), TopBitOnly());
+  }
+
+  // 2^e, for e from kEmin - (P - 1), the smallest subnormal, to kEmax.
+  static constexpr Float PowerOfTwo(int e) noexcept {
+    return FromParts(false, e, TopBitOnly());
   }
 
   // --- Classification ---
 
-  bool signbit() const noexcept { return negative_ != 0; }
-  bool is_nan() const noexcept { return Exponent() == kExpNaN; }
-  bool is_inf() const noexcept { return Exponent() == kExpInfinity; }
-  bool is_zero() const noexcept { return Exponent() == kExpZero; }
-  bool is_finite() const noexcept { return Exponent() < kExpInfinity; }
-  bool is_subnormal() const noexcept {
+  constexpr bool signbit() const noexcept { return negative_ != 0; }
+  constexpr bool is_nan() const noexcept { return Exponent() == kExpNaN; }
+  constexpr bool is_inf() const noexcept {
+    return Exponent() == kExpInfinity;
+  }
+  constexpr bool is_zero() const noexcept { return Exponent() == kExpZero; }
+  constexpr bool is_finite() const noexcept {
+    return Exponent() < kExpInfinity;
+  }
+  constexpr bool is_subnormal() const noexcept {
     return !is_zero() && Exponent() < kEmin;
   }
-  bool is_normal() const noexcept {
+  constexpr bool is_normal() const noexcept {
     return Exponent() >= kEmin && Exponent() < kExpInfinity;
   }
-  bool is_signaling() const noexcept {
+  constexpr bool is_signaling() const noexcept {
     return is_nan() && (limbs_[kLimbs - 1] & kQuietBit) == 0;
   }
 
   // Free forms, as <cmath> has them for the built-in types, so that generic
   // code calling them unqualified finds these.
-  friend bool isnan(const Float& x) noexcept { return x.is_nan(); }
-  friend bool isinf(const Float& x) noexcept { return x.is_inf(); }
-  friend bool isfinite(const Float& x) noexcept { return x.is_finite(); }
-  friend bool isnormal(const Float& x) noexcept { return x.is_normal(); }
-  friend bool signbit(const Float& x) noexcept { return x.signbit(); }
+  friend constexpr bool isnan(const Float& x) noexcept { return x.is_nan(); }
+  friend constexpr bool isinf(const Float& x) noexcept { return x.is_inf(); }
+  friend constexpr bool isfinite(const Float& x) noexcept {
+    return x.is_finite();
+  }
+  friend constexpr bool isnormal(const Float& x) noexcept {
+    return x.is_normal();
+  }
+  friend constexpr bool signbit(const Float& x) noexcept {
+    return x.signbit();
+  }
 
   FloatClass classify() const noexcept {
     if (is_nan()) return FloatClass::kNaN;
@@ -827,8 +842,8 @@ class Float {
     return static_cast<std::int32_t>(biased_exponent_ ^ 0x80000000u);
   }
 
-  static Float FromParts(bool negative, std::int32_t exponent,
-                         const Limbs& limbs) noexcept {
+  static constexpr Float FromParts(bool negative, std::int32_t exponent,
+                                   const Limbs& limbs) noexcept {
     Float result;
     result.limbs_ = limbs;
     result.biased_exponent_ = Bias(exponent);
@@ -836,20 +851,20 @@ class Float {
     return result;
   }
 
-  static Limbs TopBitOnly() noexcept {
+  static constexpr Limbs TopBitOnly() noexcept {
     Limbs limbs{};
     limbs[kLimbs - 1] = kTopBit;
     return limbs;
   }
 
-  static Limbs AllOnes() noexcept {
-    Limbs limbs;
+  static constexpr Limbs AllOnes() noexcept {
+    Limbs limbs{};
     limbs.fill(~limb_t{0});
     if constexpr (kSpareBits != 0) limbs[0] &= ~LowMask(kSpareBits);
     return limbs;
   }
 
-  static void SetQuietBit(Limbs& limbs) noexcept {
+  static constexpr void SetQuietBit(Limbs& limbs) noexcept {
     limbs[kLimbs - 1] |= kQuietBit;
   }
 
@@ -2369,20 +2384,19 @@ class numeric_limits<mpfix::Float<P, E>> {
   // Tininess is detected after rounding.
   static constexpr bool tinyness_before = false;
 
-  // Parenthesized against the min and max macros of <windows.h>.
-  static F(min)() noexcept { return F::MinNormal(); }
-  static F(max)() noexcept { return F::MaxFinite(); }
-  static F lowest() noexcept { return F::MaxFinite(true); }
-  static F epsilon() noexcept {
-    return scalbn(F::MinNormal(), 1 - P - F::kEmin);
-  }
-  static F round_error() noexcept {
-    return scalbn(F::MinNormal(), -1 - F::kEmin);
-  }
-  static F infinity() noexcept { return F::Infinity(); }
-  static F quiet_NaN() noexcept { return F::QuietNaN(); }
-  static F signaling_NaN() noexcept { return F::SignalingNaN(); }
-  static F denorm_min() noexcept { return F::MinSubnormal(); }
+  // Parenthesized against the min and max macros of <windows.h>. All are
+  // constexpr, as for the built-in types, which some standard library code
+  // relies on.
+  static constexpr F(min)() noexcept { return F::MinNormal(); }
+  static constexpr F(max)() noexcept { return F::MaxFinite(); }
+  static constexpr F lowest() noexcept { return F::MaxFinite(true); }
+  // 2^(1 - P) and 1/2.
+  static constexpr F epsilon() noexcept { return F::PowerOfTwo(1 - P); }
+  static constexpr F round_error() noexcept { return F::PowerOfTwo(-1); }
+  static constexpr F infinity() noexcept { return F::Infinity(); }
+  static constexpr F quiet_NaN() noexcept { return F::QuietNaN(); }
+  static constexpr F signaling_NaN() noexcept { return F::SignalingNaN(); }
+  static constexpr F denorm_min() noexcept { return F::MinSubnormal(); }
 };
 
 }  // namespace std

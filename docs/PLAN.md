@@ -51,15 +51,17 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    compile `std::log` because `numeric_limits<Float>::epsilon()` is not
    constexpr, and its generic code converts to double for exp, cos, sinh,
    atan2, isinf and signbit, silently losing precision; libc++ is untested.
-   Plan: `mpfix/complex.h` with a complex type of mpfix's own, whose
-   arithmetic divides with scaling and whose functions (abs, arg, norm, conj,
-   proj, polar, sqrt, exp, log, log10, pow, the trigonometric and hyperbolic
-   functions and their inverses) build on the correctly rounded real ones,
-   with C99 Annex G's special values; abs and arg are then correctly rounded,
-   the others accurate to about an ulp per component, tested against MPC.
-   Also: constexpr numeric_limits members, documenting what std::complex
-   gives on each library, and how Eigen's complex matrices, written for
-   std::complex, can use either.
+   MSVC's generic code also needs constexpr arithmetic, which Float lacks.
+   Done: `mpfix/complex.h` with `mpfix::Complex<F>`, std::complex's
+   interface and C99 Annex G's special values. Addition, subtraction,
+   multiplication, abs, arg and norm are correctly rounded; division is within
+   half an ulp plus 2^-(3P) in each component; sqrt, exp, log, log10, sin,
+   cos, tan, sinh, cosh and tanh within half an ulp plus about 2^-60, by
+   formulas without cancellation in P + 64 bits. Tested against MPC, which
+   they match in all but about 1 in 10000 components, those off by one ulp.
+   numeric_limits is constexpr. To do: asin, acos, atan, asinh, acosh and
+   atanh; how Eigen's complex matrices, written for std::complex, can use
+   Complex; and what std::complex gives on each library, documented.
 8. Hardening and release: long differential runs, TestFloat, sanitizers,
    fuzzing, and a benchmark report.
 
