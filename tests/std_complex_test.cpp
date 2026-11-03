@@ -5,7 +5,9 @@
 // against mpfix::Complex; docs/COMPLEX.md has the results. std::complex<T> is
 // unspecified for T other than float, double and long double. MSVC's STL
 // deprecates it for other types (STL4037) and computes some of it in double,
-// so the test skips there.
+// so the test skips there. libc++ calls std::abs, std::hypot, std::exp and the
+// other functions of <cmath> qualified, which take only built-in types: of
+// std::complex<Float>, only the arithmetic compiles there.
 
 #include <gtest/gtest.h>
 
@@ -13,7 +15,7 @@
 
 #include "mpfix/complex.h"
 
-#if !defined(_MSVC_STL_VERSION)
+#if !defined(_MSVC_STL_VERSION) && !defined(_LIBCPP_VERSION)
 #include <Eigen/Eigenvalues>
 
 #include "mpfix/eigen.h"
@@ -36,8 +38,8 @@ using C = Complex<F>;
 
 // Within 2^-100 of |b|: full precision but for a few bits, where double would
 // give 53.
-::testing::AssertionResult Close(const S& a, const C& b) {
-  const F bound = scalbn(abs(b), -100);
+::testing::AssertionResult Close(const S& a, const C& b, int bits = 100) {
+  const F bound = scalbn(abs(b), -bits);
   const F error = hypot(a.real() - b.real(), a.imag() - b.imag());
   if (error <= bound) return ::testing::AssertionSuccess();
   return ::testing::AssertionFailure()
@@ -56,6 +58,13 @@ TEST(StdComplex, Arithmetic) {
   EXPECT_TRUE(Close(z / w, cz / cw));
   EXPECT_TRUE(Close(F(2) * z, F(2) * cz));
   EXPECT_TRUE(Close(std::conj(z), conj(cz)));
+}
+
+#if !defined(_LIBCPP_VERSION)
+
+TEST(StdComplex, AbsArgNorm) {
+  const S z(F(0.75), F(-1.25));
+  const C cz(z.real(), z.imag());
   EXPECT_TRUE(Close(S(std::abs(z)), C(abs(cz))));
   EXPECT_TRUE(Close(S(std::arg(z)), C(arg(cz))));
   EXPECT_TRUE(Close(S(std::norm(z)), C(norm(cz))));
@@ -77,7 +86,9 @@ TEST(StdComplex, Functions) {
   EXPECT_TRUE(Close(std::cosh(z), cosh(cz)));
   EXPECT_TRUE(Close(std::tanh(z), tanh(cz)));
   EXPECT_TRUE(Close(std::asin(z), asin(cz)));
-  EXPECT_TRUE(Close(std::acos(z), acos(cz)));
+  // libstdc++ takes pi/2 - asin z, with pi/2 a long double constant of 64
+  // bits.
+  EXPECT_TRUE(Close(std::acos(z), acos(cz), 60));
   EXPECT_TRUE(Close(std::atan(z), atan(cz)));
   EXPECT_TRUE(Close(std::asinh(z), asinh(cz)));
   EXPECT_TRUE(Close(std::acosh(z), acosh(cz)));
@@ -101,6 +112,8 @@ TEST(StdComplex, EigenSolver) {
   const auto residual = a.cast<S>() * vectors - vectors * values.asDiagonal();
   EXPECT_TRUE(residual.cwiseAbs().maxCoeff() < scalbn(F(1), -100));
 }
+
+#endif  // !defined(_LIBCPP_VERSION)
 
 #endif
 

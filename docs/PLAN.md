@@ -44,24 +44,16 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    times; asin, acos, atan and atan2, 5 to 10 times; erf and erfc, 3 to 12
    times; tgamma and lgamma, 1.8 to 4.7 times; cbrt, level with MPFR at
    binary512 and faster below; and pi. Done.
-7. Complex numbers. `std::complex<T>` is unspecified for T other than float,
-   double and long double, and the standard libraries differ: libstdc++ (GCC
-   16) works at full precision, finding mpfix's functions by
-   argument-dependent lookup; MSVC's STL deprecates it (STL4037), fails to
-   compile `std::log` because `numeric_limits<Float>::epsilon()` is not
-   constexpr, and its generic code converts to double for exp, cos, sinh,
-   atan2, isinf and signbit, silently losing precision; libc++ is untested.
-   MSVC's generic code also needs constexpr arithmetic, which Float lacks.
-   Done: `mpfix/complex.h` with `mpfix::Complex<F>`, std::complex's
-   interface and C99 Annex G's special values. Addition, subtraction,
-   multiplication, abs, arg and norm are correctly rounded; division is within
-   half an ulp plus 2^-(3P) in each component; sqrt, exp, log, log10, sin,
-   cos, tan, sinh, cosh and tanh within half an ulp plus about 2^-60, by
-   formulas without cancellation in P + 64 bits. Tested against MPC, which
-   they match in all but about 1 in 10000 components, those off by one ulp.
-   numeric_limits is constexpr. To do: asin, acos, atan, asinh, acosh and
-   atanh; how Eigen's complex matrices, written for std::complex, can use
-   Complex; and what std::complex gives on each library, documented.
+7. Complex numbers. `mpfix/complex.h` with `mpfix::Complex<F>`,
+   std::complex's interface and C99 Annex G's special values. Addition,
+   subtraction, multiplication, abs, arg and norm are correctly rounded;
+   division is within half an ulp plus 2^-(3P) in each component; sqrt, exp,
+   log, log10, the trigonometric and hyperbolic functions and their inverses
+   within half an ulp plus about 2^-60, by formulas without cancellation in
+   P + 64 bits. Tested against MPC. numeric_limits is constexpr. Eigen takes
+   Complex<F> as a complex scalar. What std::complex<Float> gives with
+   libstdc++, libc++ and MSVC's STL is in docs/COMPLEX.md, probed by
+   std_complex_test. Done.
 8. Hardening and release: long differential runs, TestFloat, sanitizers,
    fuzzing, and a benchmark report.
 
