@@ -191,6 +191,179 @@ W DivSmall(const W& x, limb_t m) {
                                limbs.data(), kCount, sticky, NearestEnv{});
 }
 
+// Fixed-point numbers v 2^(64 kN) in kN + 1 limbs, least significant first,
+// in two's complement, for the series of the exponential and the sine: their
+// sums are near 1, so that an absolute error is a relative one, and raw limbs
+// skip the normalization and rounding of every step.
+template <std::size_t kN>
+using FixedLimbs = std::array<limb_t, kN + 1>;
+
+// a b for nonnegative a and b, truncated: within 1.01 2^-64kN below. The
+// partial products below limb kN - 2 of the full product are left out: each
+// is below 2^(64 (kN - 1)), and there are fewer than 2^64 of them.
+template <std::size_t kN>
+FixedLimbs<kN> FixedMul(const FixedLimbs<kN>& a, const FixedLimbs<kN>& b) {
+  constexpr std::size_t kCount = kN + 1;
+  constexpr std::size_t kFirstColumn = kN >= 2 ? kN - 2 : 0;
+  std::array<limb_t, 2 * kCount> full{};
+  for (std::size_t i = 0; i < kCount; ++i) {
+    if (a[i] == 0) continue;
+    limb_t carry = 0;
+    for (std::size_t j = kFirstColumn > i ? kFirstColumn - i : 0; j < kCount;
+         ++j) {
+      limb_t hi;
+      limb_t lo = mul_wide(a[i], b[j], hi);
+      carry_t c = 0;
+      lo = adc(lo, full[i + j], c);
+      hi += c;
+      c = 0;
+      lo = adc(lo, carry, c);
+      full[i + j] = lo;
+      carry = hi + c;
+    }
+    full[i + kCount] = carry;
+  }
+  FixedLimbs<kN> result;
+  for (std::size_t i = 0; i < kCount; ++i) result[i] = full[i + kN];
+  return result;
+}
+
+// a m for a nonnegative a and a product that fits.
+template <std::size_t kN>
+FixedLimbs<kN> FixedMulSmall(const FixedLimbs<kN>& a, limb_t m) {
+  FixedLimbs<kN> result;
+  limb_t carry = 0;
+  for (std::size_t i = 0; i <= kN; ++i) {
+    limb_t hi;
+    limb_t lo = mul_wide(a[i], m, hi);
+    carry_t c = 0;
+    result[i] = adc(lo, carry, c);
+    carry = hi + c;
+  }
+  return result;
+}
+
+// acc += x, or acc -= x.
+template <std::size_t kN>
+void FixedAccumulate(FixedLimbs<kN>& acc, const FixedLimbs<kN>& x,
+                     bool subtract) {
+  carry_t carry = 0;
+  for (std::size_t i = 0; i <= kN; ++i) {
+    acc[i] = subtract ? sbb(acc[i], x[i], carry) : adc(acc[i], x[i], carry);
+  }
+}
+
+template <std::size_t kN>
+void FixedNegate(FixedLimbs<kN>& a) {
+  carry_t carry = 1;
+  for (std::size_t i = 0; i <= kN; ++i) a[i] = adc(~a[i], 0, carry);
+}
+
+// A nonnegative v < 2^63 of the working format, truncated: within 2^-64kN.
+template <std::size_t kN, class W>
+FixedLimbs<kN> ToFixed(const W& v) {
+  static_assert(W::kLimbs == kN);
+  FixedLimbs<kN> result{};
+  if (v.is_zero()) return result;
+  // v = limbs 2^(e + 1 - 64 kN), so v 2^(64 kN) = limbs 2^(e + 1).
+  for (std::size_t i = 0; i < kN; ++i) result[i] = v.raw_limbs()[i];
+  const int shift = v.raw_exponent() + 1;
+  if (shift > 0) {
+    for (std::size_t i = kN; i > 0; --i) {
+      result[i] = (result[i] << shift) | (result[i - 1] >> (kLimbBits - shift));
+    }
+    result[0] <<= shift;
+  } else if (shift < 0) {
+    const int right = -shift;
+    const std::size_t words = static_cast<std::size_t>(right / kLimbBits);
+    const int bits = right % kLimbBits;
+    for (std::size_t i = 0; i <= kN; ++i) {
+      const std::size_t from = i + words;
+      const limb_t low = from <= kN ? result[from] : 0;
+      const limb_t high = from + 1 <= kN ? result[from + 1] : 0;
+      result[i] = bits == 0 ? low : (low >> bits) | (high << (kLimbBits - bits));
+    }
+  }
+  return result;
+}
+
+// A positive fixed-point value, rounded to the working format.
+template <class W, std::size_t kN>
+W FromFixed(FixedLimbs<kN> a) {
+  std::size_t top = kN;
+  while (a[top] == 0) --top;
+  const int shift = countl_zero(a[top]);
+  // The value's top bit has weight 2^(64 (top - kN) + 63 - shift).
+  const std::int64_t exponent =
+      static_cast<std::int64_t>(kLimbBits) *
+          (static_cast<std::int64_t>(top) - static_cast<std::int64_t>(kN)) +
+      (kLimbBits - 1 - shift);
+  if (shift != 0) {
+    for (std::size_t i = top; i > 0; --i) {
+      a[i] = (a[i] << shift) | (a[i - 1] >> (kLimbBits - shift));
+    }
+    a[0] <<= shift;
+  }
+  return FloatAccess::Round<W>(false, exponent, a.data(), top + 1, false,
+                               NearestEnv{});
+}
+
+// Paterson and Stockmeyer's evaluation of the sum over j < terms of c_j y^j,
+// for c_0 = 1 and c_j = c_(j-1) / d(j), with (-1)^j more if `alternate`, in
+// fixed point, from powers[i] = y^i for i <= k and 0 <= y < 1/4. In blocks of
+// k terms, the coefficients are small integers over one common denominator,
+// so that only the powers and one product per block are full
+// multiplications. With acc_b the sum from term bk on over its first
+// coefficient, acc_b = 1 + T / D for T = sum over 0 < i < k of +-M_i y^i
+// +- y^k acc_(b+1), D = d(bk + 1) ... d(bk + k) and
+// M_i = d(bk + i + 1) ... d(bk + k); k factors d(j) must fit in 63 bits.
+//
+// Each power, product and quotient truncates by below 2^-64kN, and the
+// growth of the multipliers is undone by the division, so that the sum is
+// within 4 2^-64kN as long as it stays above 1/2.
+template <std::size_t kN, class D>
+FixedLimbs<kN> FixedSeries(const FixedLimbs<kN>* powers, int terms, int k,
+                           const D& d, bool alternate) {
+  FixedLimbs<kN> one{};
+  one[kN] = 1;
+  const int blocks = (terms + k - 1) / k;
+  FixedLimbs<kN> acc = one;
+  for (int block = blocks - 1; block >= 0; --block) {
+    const int base = block * k;
+    const int size = (std::min)(k, terms - base);
+    const bool has_next = block < blocks - 1;
+    if (size < 2 && !has_next) {
+      acc = one;
+      continue;
+    }
+    FixedLimbs<kN> t{};
+    if (has_next) {
+      FixedAccumulate<kN>(t, FixedMul<kN>(powers[size], acc),
+                          alternate && (size & 1) != 0);
+    }
+    limb_t multiplier = 1;
+    for (int i = size - 1; i >= 1; --i) {
+      if (has_next || i < size - 1) multiplier *= d(base + i + 1);
+      FixedAccumulate<kN>(t, FixedMulSmall<kN>(powers[i], multiplier),
+                          alternate && (i & 1) != 0);
+    }
+    // T may be negative; divide its magnitude.
+    const bool negative = (t[kN] >> (kLimbBits - 1)) != 0;
+    if (negative) FixedNegate<kN>(t);
+    DivideLimbs(t.data(), kN + 1, multiplier * d(base + 1));
+    acc = one;
+    FixedAccumulate<kN>(acc, t, negative);
+  }
+  return acc;
+}
+
+// The block size for `terms` terms whose largest factor d has d_bits bits.
+inline int SeriesBlock(int terms, int d_bits) {
+  constexpr int kMaxBlock = 16;
+  return (std::max)(
+      1, (std::min)({IntegerSqrt(terms), 63 / d_bits, kMaxBlock}));
+}
+
 // e^r - 1 for |r| < 1/2, with a relative error below `units` * u. The error
 // of r itself is not included.
 template <class W>
@@ -213,46 +386,29 @@ W ExpM1Kernel(const W& r, int& units) {
     log2_factorial += std::bit_width(static_cast<unsigned>(n + 1)) - 1;
   }
 
-  // The sum of x^j / j! for j = 1..n, by Paterson and Stockmeyer: in blocks
-  // of k terms, whose coefficients are small integers over one common
-  // denominator, so that only the powers of x and one product per block are
-  // full multiplications. With acc_b = sum over j > bk of x^(j - bk) (bk)!/j!,
-  // acc_b * D = sum_{i<k} x^i M_i + x^k (1 + acc_(b+1)), where
-  // D = (bk + 1)...(bk + k) and M_i = (bk + i + 1)...(bk + k).
-  const int n_bits = std::bit_width(static_cast<unsigned>(n));
-  const int k = (std::max)(1, (std::min)(IntegerSqrt(n), 62 / n_bits));
-  constexpr int kMaxBlock = 16;
-  std::array<W, kMaxBlock + 1> powers;
-  powers[1] = x;
+  // e^x - 1 = x H(x) for H(x) = sum over i < n of x^i / (i + 1)!, which is
+  // within 2^-(kPrecision + 3) of the true value, and between 0.88 and 1.14.
+  // In fixed point, it is within 4 u absolute, and so 5 u relative; rounding
+  // it and the product add 2 u.
+  constexpr std::size_t kN = W::kLimbs;
+  const auto d = [](int j) { return static_cast<limb_t>(j + 1); };
+  const int k = SeriesBlock(n, std::bit_width(d(n)));
+  std::array<FixedLimbs<kN>, 17> powers;
+  powers[1] = ToFixed<kN>(abs(x));
   for (int i = 2; i <= k; ++i) {
     powers[static_cast<std::size_t>(i)] =
-        powers[static_cast<std::size_t>(i - 1)] * x;
+        FixedMul<kN>(powers[static_cast<std::size_t>(i - 1)], powers[1]);
   }
-  const int blocks = (n + k - 1) / k;
-  const W one(1);
-  W acc = W::Zero();
-  for (int b = blocks - 1; b >= 0; --b) {
-    const int size = (std::min)(k, n - b * k);
-    const auto base = static_cast<limb_t>(b * k);
-    W sum = b == blocks - 1 ? powers[static_cast<std::size_t>(size)]
-                            : powers[static_cast<std::size_t>(size)] *
-                                  (one + acc);
-    limb_t multiplier = 1;
-    for (int i = size - 1; i >= 1; --i) {
-      multiplier *= base + static_cast<limb_t>(i) + 1;
-      sum = sum + MulSmall(powers[static_cast<std::size_t>(i)], multiplier);
-    }
-    acc = DivSmall(sum, multiplier * (base + 1));
-  }
-  W q = acc;
+  const W acc = FromFixed<W, kN>(
+      FixedSeries<kN>(powers.data(), n, k, d, x.signbit()));
+  W q = x * acc;
   // e^(2a) - 1 = q (q + 2) for q = e^a - 1, which keeps the relative error
   // of a small result.
   const W two(2);
   for (int i = 0; i < halvings; ++i) q = q * (q + two);
-  // The series and its truncation stay within 2 u per term, and each
-  // squaring adds 2 u; for |r| <= 1/2 the squarings at most double the
-  // earlier error.
-  units = 2 * (10 + 2 * n + 2 * halvings);
+  // The series stays within 8 u, and each squaring adds 2 u; for |r| <= 1/2
+  // the squarings at most double the earlier error.
+  units = 2 * (10 + 2 * halvings);
   return q;
 }
 
@@ -1277,127 +1433,8 @@ bool ReduceSmallByHalfPi(const F& x, int& quadrant, W& r) {
   return r.raw_exponent() >= 68 - W::kPrecision;
 }
 
-// Fixed-point numbers v 2^(64 kN) in kN + 1 limbs, least significant first,
-// in two's complement, for the sine series: its terms need only an absolute
-// error, and raw limbs skip the normalization and rounding of every step.
-template <std::size_t kN>
-using FixedLimbs = std::array<limb_t, kN + 1>;
-
-// a b for nonnegative a and b, truncated: within 2^-64kN below.
-template <std::size_t kN>
-FixedLimbs<kN> FixedMul(const FixedLimbs<kN>& a, const FixedLimbs<kN>& b) {
-  constexpr std::size_t kCount = kN + 1;
-  std::array<limb_t, 2 * kCount> full{};
-  for (std::size_t i = 0; i < kCount; ++i) {
-    if (a[i] == 0) continue;
-    limb_t carry = 0;
-    for (std::size_t j = 0; j < kCount; ++j) {
-      limb_t hi;
-      limb_t lo = mul_wide(a[i], b[j], hi);
-      carry_t c = 0;
-      lo = adc(lo, full[i + j], c);
-      hi += c;
-      c = 0;
-      lo = adc(lo, carry, c);
-      full[i + j] = lo;
-      carry = hi + c;
-    }
-    full[i + kCount] = carry;
-  }
-  FixedLimbs<kN> result;
-  for (std::size_t i = 0; i < kCount; ++i) result[i] = full[i + kN];
-  return result;
-}
-
-// a m for a nonnegative a and a product that fits.
-template <std::size_t kN>
-FixedLimbs<kN> FixedMulSmall(const FixedLimbs<kN>& a, limb_t m) {
-  FixedLimbs<kN> result;
-  limb_t carry = 0;
-  for (std::size_t i = 0; i <= kN; ++i) {
-    limb_t hi;
-    limb_t lo = mul_wide(a[i], m, hi);
-    carry_t c = 0;
-    result[i] = adc(lo, carry, c);
-    carry = hi + c;
-  }
-  return result;
-}
-
-// acc += x, or acc -= x.
-template <std::size_t kN>
-void FixedAccumulate(FixedLimbs<kN>& acc, const FixedLimbs<kN>& x,
-                     bool subtract) {
-  carry_t carry = 0;
-  for (std::size_t i = 0; i <= kN; ++i) {
-    acc[i] = subtract ? sbb(acc[i], x[i], carry) : adc(acc[i], x[i], carry);
-  }
-}
-
-template <std::size_t kN>
-void FixedNegate(FixedLimbs<kN>& a) {
-  carry_t carry = 1;
-  for (std::size_t i = 0; i <= kN; ++i) a[i] = adc(~a[i], 0, carry);
-}
-
-// A nonnegative v < 2^63 of the working format, truncated: within 2^-64kN.
-template <std::size_t kN, class W>
-FixedLimbs<kN> ToFixed(const W& v) {
-  static_assert(W::kLimbs == kN);
-  FixedLimbs<kN> result{};
-  if (v.is_zero()) return result;
-  // v = limbs 2^(e + 1 - 64 kN), so v 2^(64 kN) = limbs 2^(e + 1).
-  for (std::size_t i = 0; i < kN; ++i) result[i] = v.raw_limbs()[i];
-  const int shift = v.raw_exponent() + 1;
-  if (shift > 0) {
-    for (std::size_t i = kN; i > 0; --i) {
-      result[i] = (result[i] << shift) | (result[i - 1] >> (kLimbBits - shift));
-    }
-    result[0] <<= shift;
-  } else if (shift < 0) {
-    const int right = -shift;
-    const std::size_t words = static_cast<std::size_t>(right / kLimbBits);
-    const int bits = right % kLimbBits;
-    for (std::size_t i = 0; i <= kN; ++i) {
-      const std::size_t from = i + words;
-      const limb_t low = from <= kN ? result[from] : 0;
-      const limb_t high = from + 1 <= kN ? result[from + 1] : 0;
-      result[i] = bits == 0 ? low : (low >> bits) | (high << (kLimbBits - bits));
-    }
-  }
-  return result;
-}
-
-// A positive fixed-point value, rounded to the working format.
-template <class W, std::size_t kN>
-W FromFixed(FixedLimbs<kN> a) {
-  std::size_t top = kN;
-  while (a[top] == 0) --top;
-  const int shift = countl_zero(a[top]);
-  // The value's top bit has weight 2^(64 (top - kN) + 63 - shift).
-  const std::int64_t exponent =
-      static_cast<std::int64_t>(kLimbBits) *
-          (static_cast<std::int64_t>(top) - static_cast<std::int64_t>(kN)) +
-      (kLimbBits - 1 - shift);
-  if (shift != 0) {
-    for (std::size_t i = top; i > 0; --i) {
-      a[i] = (a[i] << shift) | (a[i - 1] >> (kLimbBits - shift));
-    }
-    a[0] <<= shift;
-  }
-  return FloatAccess::Round<W>(false, exponent, a.data(), top + 1, false,
-                               NearestEnv{});
-}
-
 // sin b for an exact b with 0 < |b| < 1/2, with a relative error below
-// 6 u: b G(b^2) for G(y) = sum over j of (-y)^j / (2j + 1)!, by Paterson
-// and Stockmeyer as in ExpM1Kernel, in fixed point. The coefficients of a
-// block of k terms are small integers over one common denominator, so that
-// only the powers of y and one product per block are full multiplications.
-// With acc_b the sum from term bk on over its first coefficient,
-// acc_b = 1 - T_b / D for T_b = sum over 0 < i < k of (-1)^(i + 1) M_i y^i
-// + (-1)^(k + 1) y^k acc_(b+1), where D = d(bk + 1) ... d(bk + k),
-// M_i = d(bk + i + 1) ... d(bk + k) and d(j) = 2j (2j + 1).
+// 6 u: b G(b^2) for G(y) = sum over j of (-y)^j / (2j + 1)!, in fixed point.
 template <class W>
 W SinSeries(const W& b) {
   constexpr std::size_t kN = W::kLimbs;
@@ -1411,54 +1448,18 @@ W SinSeries(const W& b) {
     log2_factorial += std::bit_width(static_cast<unsigned>(2 * n)) - 1 +
                       std::bit_width(static_cast<unsigned>(2 * n + 1)) - 1;
   }
-  const int terms = n;  // j = 0 .. n - 1.
   const auto d = [](int j) {
     return static_cast<limb_t>(2 * j) * static_cast<limb_t>(2 * j + 1);
   };
-  // k factors d(j) <= d(n) must fit in 63 bits.
-  const int d_bits = std::bit_width(d(n));
-  const int k = (std::max)(1, (std::min)(IntegerSqrt(terms), 63 / d_bits));
-  constexpr int kMaxBlock = 16;
-  std::array<FixedLimbs<kN>, kMaxBlock + 1> powers;
+  const int k = SeriesBlock(n, std::bit_width(d(n)));
+  std::array<FixedLimbs<kN>, 17> powers;
   powers[1] = ToFixed<kN>(b * b);
   for (int i = 2; i <= k; ++i) {
     powers[static_cast<std::size_t>(i)] =
         FixedMul<kN>(powers[static_cast<std::size_t>(i - 1)], powers[1]);
   }
-  FixedLimbs<kN> one{};
-  one[kN] = 1;
-  const int blocks = (terms + k - 1) / k;
-  FixedLimbs<kN> acc = one;
-  for (int block = blocks - 1; block >= 0; --block) {
-    const int base = block * k;
-    const int size = (std::min)(k, terms - base);
-    const bool has_next = block < blocks - 1;
-    FixedLimbs<kN> t{};
-    if (has_next) {
-      FixedAccumulate<kN>(
-          t, FixedMul<kN>(powers[static_cast<std::size_t>(size)], acc),
-          (size & 1) == 0);
-    }
-    limb_t multiplier = 1;
-    for (int i = size - 1; i >= 1; --i) {
-      if (has_next || i < size - 1) multiplier *= d(base + i + 1);
-      FixedAccumulate<kN>(
-          t, FixedMulSmall<kN>(powers[static_cast<std::size_t>(i)], multiplier),
-          (i & 1) == 0);
-    }
-    if (size < 2 && !has_next) {
-      acc = one;
-      continue;
-    }
-    // T is positive: its first term dominates, since y < 1/4.
-    DivideLimbs(t.data(), kN + 1, multiplier * d(base + 1));
-    acc = one;
-    FixedAccumulate<kN>(acc, t, true);
-  }
-  // Each power, product and quotient truncates by below 2^-64kN, which is u,
-  // and the multipliers' growth is undone by the division: acc is within 4 u
-  // absolute, and acc > 0.98. Rounding it and b acc add 2 u.
-  return b * FromFixed<W, kN>(acc);
+  // G is above 0.98 and within 4 u absolute; rounding it and b G add 2 u.
+  return b * FromFixed<W, kN>(FixedSeries<kN>(powers.data(), n, k, d, true));
 }
 
 // sin r and cos r - 1 for an exact r with |r| < 0.8, with relative errors

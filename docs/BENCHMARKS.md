@@ -131,20 +131,20 @@ Boost's `cpp_bin_float` is shown for exp and log only.
 
 | Format | Library | exp | exp2 | expm1 | log | log2 | log10 | log1p |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| binary128 | mpfix | 600 | 533 | 422 | 392 | 414 | 406 | 281 |
-| | MPFR | 1032 | 1277 | 1007 | 1741 | 1929 | 3433 | 1863 |
-| | Boost | 5034 | | | 6533 | | | |
-| binary256 | mpfix | 1047 | 1008 | 846 | 777 | 819 | 793 | 605 |
-| | MPFR | 1624 | 1901 | 1550 | 2777 | 3254 | 5793 | 4697 |
-| | Boost | 17296 | | | 18331 | | | |
-| binary512 | mpfix | 2493 | 2368 | 2055 | 2152 | 2273 | 2200 | 1803 |
-| | MPFR | 2892 | 3237 | 2799 | 4687 | 4962 | 8978 | 7386 |
-| | Boost | 75066 | | | 61405 | | | |
+| binary128 | mpfix | 416 | 383 | 273 | 393 | 440 | 431 | 300 |
+| | MPFR | 1033 | 1305 | 1019 | 1749 | 2087 | 3628 | 2064 |
+| | Boost | 5078 | | | 6464 | | | |
+| binary256 | mpfix | 698 | 661 | 490 | 826 | 865 | 846 | 652 |
+| | MPFR | 1720 | 2045 | 1665 | 2973 | 3498 | 6230 | 5117 |
+| | Boost | 18316 | | | 19515 | | | |
+| binary512 | mpfix | 1856 | 1663 | 1337 | 2363 | 2475 | 2397 | 1963 |
+| | MPFR | 3129 | 3498 | 3057 | 5048 | 5328 | 9730 | 8059 |
+| | Boost | 84623 | | | 66530 | | | |
 
-mpfix is 1.2 to 2.4 times faster than MPFR for the exponentials and 2.2 to 8
-times faster for the logarithms. The margin for exp narrows with size: at
-binary512 its series still costs about 20 full multiplications and as many
-additions, where MPFR works on fixed-point limbs.
+mpfix is 1.7 to 3.7 times faster than MPFR for the exponentials and 2.1 to 8
+times faster for the logarithms. The exponential's series runs in fixed point
+on raw limbs, (e^r - 1)/r being near 1, which skips the normalization and
+rounding of every Float operation and made exp 1.4 to 1.7 times faster.
 
 Most results are decided by the bits of the working value alone: rounding
 boundaries all have at most P + 1 bits, so when the bits below those are
@@ -157,18 +157,19 @@ acosh one plus values as for log, and atanh arguments below 1/2 in magnitude.
 
 | Format | Library | sinh | cosh | tanh | asinh | acosh | atanh |
 |---|---|---:|---:|---:|---:|---:|---:|
-| binary128 | mpfix | 641 | 643 | 654 | 507 | 514 | 410 |
-| | MPFR | 1275 | 1259 | 1349 | 2156 | 3305 | 3946 |
-| | Boost | 5653 | 5628 | 5859 | 7291 | 7313 | 8182 |
-| binary256 | mpfix | 1185 | 1167 | 1190 | 975 | 994 | 840 |
-| | MPFR | 1941 | 1856 | 1946 | 3511 | 5100 | 8853 |
-| | Boost | 18533 | 18523 | 18953 | 18656 | 17638 | 20389 |
-| binary512 | mpfix | 2830 | 2813 | 2848 | 2614 | 2655 | 2443 |
-| | MPFR | 3333 | 3316 | 3400 | 5462 | 7919 | 12250 |
-| | Boost | 81257 | 81282 | 82373 | 64776 | 69365 | 77585 |
+| binary128 | mpfix | 509 | 492 | 520 | 516 | 518 | 436 |
+| | MPFR | 1307 | 1311 | 1389 | 2195 | 3390 | 4005 |
+| | Boost | 5838 | 5910 | 6098 | 7357 | 7297 | 7958 |
+| binary256 | mpfix | 812 | 783 | 814 | 998 | 1015 | 853 |
+| | MPFR | 1983 | 1911 | 1999 | 3618 | 5236 | 9088 |
+| | Boost | 18932 | 18882 | 19395 | 19098 | 18162 | 20202 |
+| binary512 | mpfix | 2039 | 2014 | 2119 | 2719 | 2749 | 2531 |
+| | MPFR | 3446 | 3438 | 3469 | 5649 | 8161 | 12631 |
+| | Boost | 84599 | 83566 | 84817 | 66423 | 70306 | 78130 |
 
 sinh, cosh and tanh take e^|x| from the exponential's kernel and cost about as
-much as exp, with one division more; they are 1.2 to 2 times faster than MPFR.
+much as exp, with one division more; they are 1.6 to 2.7 times faster than
+MPFR.
 asinh, acosh and atanh are logarithms of arguments formed without
 cancellation, through the same tables as log, and 2 to 10 times faster.
 
@@ -178,17 +179,17 @@ The same benchmark, with arguments as for exp.
 
 | Format | Library | sin | cos | tan |
 |---|---|---:|---:|---:|
-| binary128 | mpfix | 537 | 540 | 579 |
-| | MPFR | 1368 | 989 | 1655 |
-| | Boost | 4463 | 4531 | 9178 |
-| binary256 | mpfix | 927 | 921 | 975 |
-| | MPFR | 2016 | 1520 | 2350 |
-| | Boost | 9085 | 9132 | 18633 |
-| binary512 | mpfix | 2062 | 2102 | 2197 |
-| | MPFR | 3313 | 2636 | 4018 |
-| | Boost | 31449 | 31805 | 64496 |
+| binary128 | mpfix | 551 | 551 | 613 |
+| | MPFR | 1393 | 1005 | 1711 |
+| | Boost | 4556 | 4630 | 9412 |
+| binary256 | mpfix | 895 | 897 | 964 |
+| | MPFR | 2016 | 1552 | 2371 |
+| | Boost | 9200 | 9408 | 19068 |
+| binary512 | mpfix | 2168 | 2209 | 2325 |
+| | MPFR | 3385 | 2661 | 4150 |
+| | Boost | 32546 | 32529 | 66790 |
 
-mpfix is 1.25 to 2.9 times faster than MPFR. Arguments below 2^27 are reduced
+mpfix is 1.2 to 2.8 times faster than MPFR. Arguments below 2^27 are reduced
 by Cody and Waite's method, and larger ones, or those extremely close to
 a multiple of pi/2, by Payne and Hanek's, exactly. Two tables of sin and
 cos at multiples of 2^-7 and 2^-14 leave an argument below 2^-15, whose sine
@@ -207,15 +208,15 @@ as for log, and hypot pairs of them.
 
 | Format | Library | pow | cbrt | hypot |
 |---|---|---:|---:|---:|
-| binary128 | mpfix | 978 | 273 | 94 |
-| | MPFR | 3069 | 425 | 214 |
-| | Boost | 12715 | | |
-| binary256 | mpfix | 1818 | 461 | 161 |
-| | MPFR | 4964 | 513 | 318 |
-| | Boost | 37547 | | |
-| binary512 | mpfix | 4798 | 668 | 345 |
-| | MPFR | 8092 | 662 | 462 |
-| | Boost | 143011 | | |
+| binary128 | mpfix | 887 | 300 | 101 |
+| | MPFR | 3377 | 419 | 229 |
+| | Boost | 13649 | | |
+| binary256 | mpfix | 1550 | 510 | 174 |
+| | MPFR | 5606 | 564 | 501 |
+| | Boost | 40898 | | |
+| binary512 | mpfix | 4382 | 724 | 372 |
+| | MPFR | 8755 | 752 | 503 |
+| | Boost | 155526 | | |
 
 pow is e^(y log x) with exact and tied results detected beforehand. cbrt runs
 Newton's iteration on the inverse cube root, which needs no division, from a
@@ -224,7 +225,8 @@ root. hypot works in P + 64 bits and only falls back to an exact square root
 of 4P bits for results that may be exact or ties.
 
 The first call in each format builds constants and reduction tables, once:
-0.4 ms for exp and 0.5 ms for log at binary128, 2 ms and 3.7 ms at binary512.
+0.15 ms for exp and 0.5 ms for log at binary128, 0.8 ms and 3.7 ms at
+binary512.
 The first sin also computes pi and 2/pi, for all formats, in 3 ms; its own
 tables take 0.4 ms at binary256 and 1 ms at binary512.
 
