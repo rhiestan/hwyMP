@@ -128,5 +128,74 @@ TEST(Math, OverflowAndUnderflow) {
   EXPECT_TRUE(SameBits(exp(-tiny, context), next_down(F(1))));
 }
 
+TEST(Math, PowSpecialValues) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  const F one(1);
+  const F nan = F::QuietNaN();
+  EXPECT_TRUE(SameBits(pow(nan, F::Zero(true)), one));
+  EXPECT_TRUE(SameBits(pow(one, nan), one));
+  EXPECT_TRUE(pow(F(2), nan).is_nan());
+  EXPECT_TRUE(SameBits(pow(F(-1), inf), one));
+  EXPECT_TRUE(SameBits(pow(F(0.5), inf), F::Zero()));
+  EXPECT_TRUE(SameBits(pow(F(0.5), -inf), inf));
+  EXPECT_TRUE(SameBits(pow(F(-3), inf), inf));
+  EXPECT_TRUE(SameBits(pow(-inf, F(3)), -inf));
+  EXPECT_TRUE(SameBits(pow(-inf, F(-3)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(pow(-inf, F(2.5)), inf));
+  EXPECT_TRUE(SameBits(pow(F::Zero(true), F(3)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(pow(F::Zero(true), F(0.5)), F::Zero()));
+  EXPECT_TRUE(SameBits(pow(F(-1), F(-7)), -one));
+
+  Context context;
+  EXPECT_TRUE(SameBits(pow(F::Zero(true), F(-3), context), -inf));
+  EXPECT_EQ(context.flags, unsigned{kFlagDivByZero});
+  context = Context{};
+  EXPECT_TRUE(SameBits(pow(F::Zero(true), -inf, context), inf));
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(pow(F(-2), F(0.5), context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+  context = Context{};
+  EXPECT_TRUE(pow(F::SignalingNaN(), F::Zero(), context).is_nan());
+  EXPECT_EQ(context.flags, unsigned{kFlagInvalid});
+}
+
+TEST(Math, PowExactResultsRaiseNothing) {
+  using F = binary256;
+  Context context;
+  EXPECT_TRUE(pow(F(9), F(1.5), context) == F(27));
+  EXPECT_TRUE(pow(F(-3), F(5), context) == F(-243));
+  EXPECT_TRUE(pow(F(2), F(-1000), context) == scalbn(F(1), -1000));
+  EXPECT_TRUE(pow(F(16), F(-0.75), context) == F(0.125));
+  EXPECT_TRUE(pow(F(0.25), F(0.5), context) == F(0.5));
+  EXPECT_TRUE(cbrt(F(-27), context) == F(-3));
+  EXPECT_TRUE(cbrt(F(0.125), context) == F(0.5));
+  EXPECT_TRUE(hypot(F(-5), F(12), context) == F(13));
+  EXPECT_TRUE(hypot(F(7), F::Zero(), context) == F(7));
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(pow(F(2), F(0.5), context) == sqrt(F(2)));
+  EXPECT_EQ(context.flags, unsigned{kFlagInexact});
+}
+
+TEST(Math, PowRootsAndHypotMatchDouble) {
+  using F = binary128;
+  for (const double x : {0.001, 0.3, 0.9, 1.5, 2.0, 7.25, 1e10}) {
+    for (const double y : {-50.5, -3.0, -0.5, 0.1, 1.0 / 3, 2.0, 17.75}) {
+      EXPECT_NEAR(static_cast<double>(pow(F(x), F(y))), std::pow(x, y),
+                  std::pow(x, y) * 1e-15);
+      EXPECT_NEAR(static_cast<double>(hypot(F(x), F(y))), std::hypot(x, y),
+                  std::hypot(x, y) * 1e-15);
+    }
+    EXPECT_NEAR(static_cast<double>(cbrt(F(-x))), std::cbrt(-x),
+                std::cbrt(x) * 1e-15);
+  }
+  // No intermediate overflow or underflow.
+  EXPECT_TRUE(hypot(F::MaxFinite(), F::MaxFinite()).is_inf());
+  EXPECT_TRUE(hypot(scalbn(F(3), 16000), scalbn(F(4), 16000)) ==
+              scalbn(F(5), 16000));
+  const F small = F::MinSubnormal();
+  EXPECT_TRUE(hypot(F(3) * small, F(4) * small) == F(5) * small);
+}
+
 }  // namespace
 }  // namespace mpfix

@@ -119,7 +119,9 @@ milliseconds, and so does output with more than about 780 significant digits.
 Fixed notation of such values has up to 1.3 million digits and is slow in
 proportion.
 
-## Exponentials and logarithms
+## Elementary functions
+
+### Exponentials and logarithms
 
 `bench/bench_math.cpp`, same machine and libraries, not pinned. Best of 9 runs
 over 256 arguments: exponentials in (-20, 20), logarithms of positive values
@@ -129,20 +131,47 @@ Boost's `cpp_bin_float` is shown for exp and log only.
 
 | Format | Library | exp | exp2 | expm1 | log | log2 | log10 | log1p |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| binary128 | mpfix | 642 | 594 | 496 | 465 | 486 | 476 | 349 |
-| | MPFR | 1056 | 1300 | 1017 | 1728 | 1929 | 3350 | 1860 |
-| | Boost | 5048 | | | 6583 | | | |
-| binary256 | mpfix | 1108 | 1071 | 934 | 839 | 875 | 879 | 692 |
-| | MPFR | 1628 | 1888 | 1556 | 2751 | 3244 | 5828 | 4780 |
-| | Boost | 17184 | | | 17995 | | | |
-| binary512 | mpfix | 2673 | 2571 | 2218 | 2443 | 2387 | 2402 | 1959 |
-| | MPFR | 2959 | 3284 | 2879 | 4635 | 4907 | 9016 | 7344 |
-| | Boost | 76291 | | | 62141 | | | |
+| binary128 | mpfix | 600 | 533 | 422 | 392 | 414 | 406 | 281 |
+| | MPFR | 1032 | 1277 | 1007 | 1741 | 1929 | 3433 | 1863 |
+| | Boost | 5034 | | | 6533 | | | |
+| binary256 | mpfix | 1047 | 1008 | 846 | 777 | 819 | 793 | 605 |
+| | MPFR | 1624 | 1901 | 1550 | 2777 | 3254 | 5793 | 4697 |
+| | Boost | 17296 | | | 18331 | | | |
+| binary512 | mpfix | 2493 | 2368 | 2055 | 2152 | 2273 | 2200 | 1803 |
+| | MPFR | 2892 | 3237 | 2799 | 4687 | 4962 | 8978 | 7386 |
+| | Boost | 75066 | | | 61405 | | | |
 
-mpfix is 1.1 to 2.2 times faster than MPFR for the exponentials and 1.9 to 7
+mpfix is 1.2 to 2.4 times faster than MPFR for the exponentials and 2.2 to 8
 times faster for the logarithms. The margin for exp narrows with size: at
 binary512 its series still costs about 20 full multiplications and as many
 additions, where MPFR works on fixed-point limbs.
+
+Most results are decided by the bits of the working value alone: rounding
+boundaries all have at most P + 1 bits, so when the bits below those are
+neither nearly all zeros nor nearly all ones, the value rounds directly.
+
+### Powers and roots
+
+The same benchmark. pow takes x as for log and y as for exp; cbrt takes values
+as for log, and hypot pairs of them.
+
+| Format | Library | pow | cbrt | hypot |
+|---|---|---:|---:|---:|
+| binary128 | mpfix | 978 | 273 | 94 |
+| | MPFR | 3069 | 425 | 214 |
+| | Boost | 12715 | | |
+| binary256 | mpfix | 1818 | 461 | 161 |
+| | MPFR | 4964 | 513 | 318 |
+| | Boost | 37547 | | |
+| binary512 | mpfix | 4798 | 668 | 345 |
+| | MPFR | 8092 | 662 | 462 |
+| | Boost | 143011 | | |
+
+pow is e^(y log x) with exact and tied results detected beforehand. cbrt runs
+Newton's iteration on the inverse cube root, which needs no division, from a
+third-order step at 128 bits; at binary512 it is level with MPFR's integer
+root. hypot works in P + 64 bits and only falls back to an exact square root
+of 4P bits for results that may be exact or ties.
 
 The first call in each format builds constants and reduction tables, once:
 0.4 ms for exp and 0.5 ms for log at binary128, 2.2 ms and 3.7 ms at binary512.

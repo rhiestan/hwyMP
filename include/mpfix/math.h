@@ -1,9 +1,9 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Exponentials and logarithms: exp, exp2, expm1, log, log2, log10 and log1p,
-// correctly rounded in all five modes, with the IEEE 754 flags when a Context
-// is given.
+// Exponentials, logarithms, powers and roots: exp, exp2, expm1, log, log2,
+// log10, log1p, pow, cbrt and hypot, correctly rounded in all five modes, with
+// the IEEE 754 flags when a Context is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 
 #include "mpfix/bigint.h"
 #include "mpfix/charconv.h"
@@ -460,12 +461,57 @@ W ReduceByLn2(const F& x, std::int64_t& k) {
 
 // --- Rounding ---
 
+// Whether bits [low, high) of the limbs, counted from bit 0 of limbs[0], are
+// all equal to `ones`.
+template <std::size_t kCount>
+bool BitsAllEqual(const std::array<limb_t, kCount>& limbs, int low, int high,
+                  bool ones) {
+  const limb_t fill = ones ? ~limb_t{0} : 0;
+  for (int bit = low; bit < high;) {
+    const int word = bit / kLimbBits;
+    const int offset = bit % kLimbBits;
+    const int take = (std::min)(kLimbBits - offset, high - bit);
+    const limb_t mask = (take == kLimbBits ? ~limb_t{0}
+                                           : ((limb_t{1} << take) - 1))
+                        << offset;
+    if ((limbs[static_cast<std::size_t>(word)] & mask) != (fill & mask)) {
+      return false;
+    }
+    bit += take;
+  }
+  return true;
+}
+
+// Rounds a value known to lie within 2^-bits relative of y and to be
+// inexact, if no number of at most P + 1 bits lies that close to y. Every
+// rounding boundary has at most P + 1 bits, in every mode and on the
+// subnormal grid too, so y then rounds as the value does. Returns false if
+// it cannot tell.
+template <class F, class W, class Env>
+bool RoundClearOfBoundaries(const W& y, int bits, const Env& env, F& result) {
+  constexpr int kTotal = static_cast<int>(W::kLimbs) * kLimbBits;
+  // The bits below the first P + 1, and the error in units of the lowest
+  // limb bit, below 2^slack.
+  constexpr int kBelow = kTotal - (F::kPrecision + 1);
+  const int slack = kTotal - bits;
+  if (slack + 1 >= kBelow) return false;
+  const auto& limbs = y.raw_limbs();
+  if (BitsAllEqual(limbs, slack, kBelow, false) ||
+      BitsAllEqual(limbs, slack, kBelow, true)) {
+    return false;
+  }
+  result = FloatAccess::Round<F>(y.signbit(), y.raw_exponent(), limbs.data(),
+                                 W::kLimbs, true, env);
+  return true;
+}
+
 // Rounds a value known to lie within 2^-bits relative of y, and known to be
 // inexact. Returns false if the interval does not decide the result, unless
 // `last` is set, in which case y is rounded.
 template <class F, class W, class Env>
 bool RoundTranscendental(const W& y, int bits, bool last, const Env& env,
                          F& result) {
+  if (RoundClearOfBoundaries(y, bits, env, result)) return true;
   Context down{Rounding::kDown, 0};
   Context up{Rounding::kUp, 0};
   const W delta = scalbn(abs(y), -bits);
@@ -522,7 +568,7 @@ F ZivEvaluate(const Level& level) {
 }
 
 // The lost bits for an error of `units` u, with a margin.
-inline int LostBits(int units) {
+constexpr int LostBits(int units) {
   return std::bit_width(static_cast<unsigned>(units)) + 2;
 }
 
@@ -545,12 +591,38 @@ F RoundBeside(const F& v, bool t_positive, const Env& env) {
                                env);
 }
 
-// A positive value far below the smallest subnormal.
+// A value far below the smallest subnormal.
 template <class F, class Env>
-F RoundTinyPositive(const Env& env) {
+F RoundTiny(bool negative, const Env& env) {
   const limb_t top_bit = limb_t{1} << (kLimbBits - 1);
-  return FloatAccess::Round<F>(false, std::int64_t{F::kEmin} - F::kPrecision - 4,
+  return FloatAccess::Round<F>(negative,
+                               std::int64_t{F::kEmin} - F::kPrecision - 4,
                                &top_bit, 1, true, env);
+}
+
+// The lost bits for an error of `units` u, with a margin.
+inline int LostBitsWide(std::int64_t units) {
+  return std::bit_width(static_cast<std::uint64_t>(units)) + 2;
+}
+
+// Rounds w, a value truncated towards zero, to F with the given sign. `sticky`
+// tells whether the truncation lost anything. W must have at least P + 2 bits.
+template <class F, class W, class Env>
+F RoundTruncated(bool negative, const W& w, bool sticky, const Env& env) {
+  return FloatAccess::Round<F>(negative, w.raw_exponent(),
+                               w.raw_limbs().data(), W::kLimbs, sticky, env);
+}
+
+// Whether a finite x is an integer.
+template <class F>
+bool IsInteger(const F& x) {
+  return x.is_zero() || LowestBitExponent(x) >= 0;
+}
+
+// The number of significant bits of a finite nonzero x.
+template <class F>
+std::int64_t SignificantBits(const F& x) {
+  return std::int64_t{x.raw_exponent()} - LowestBitExponent(x) + 1;
 }
 
 template <class F, class Env>
@@ -585,7 +657,7 @@ F ExpImpl(const F& x, const Env& env) {
   // smallest subnormal.
   if (wide >= Wide1<F>(F::kEmax + 2)) return RoundOverflow<F>(false, env);
   if (wide <= Wide1<F>(-(F::kEmax + F::kPrecision + 4))) {
-    return RoundTinyPositive<F>(env);
+    return RoundTiny<F>(false, env);
   }
   return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
     using W = typename decltype(tag)::type;
@@ -612,7 +684,7 @@ F Exp2Impl(const F& x, const Env& env) {
   if (wide >= Wide1<F>(F::kEmax + 1)) return RoundOverflow<F>(false, env);
   // Below 2^(kEmin - P - 1), a quarter of the smallest subnormal.
   if (wide < Wide1<F>(F::kEmin - F::kPrecision - 1)) {
-    return RoundTinyPositive<F>(env);
+    return RoundTiny<F>(false, env);
   }
   if (trunc(x) == x) {
     // Exact, or a subnormal that rounds away.
@@ -816,6 +888,294 @@ F Log1pImpl(const F& x, const Env& env) {
   });
 }
 
+// --- Powers and roots ---
+
+// The exact x^2 + y^2 always fits: the exponents differ by at most P + 2.
+template <class F>
+using HypotWorking = Float<4 * F::kPrecision + 8, 29>;
+
+template <class F, class Env>
+F HypotImpl(const F& x, const F& y, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  // An infinity wins over a quiet NaN, but not over a signaling one.
+  if (x.is_signaling() || y.is_signaling()) {
+    return FloatAccess::PropagateNaN(x, y, env);
+  }
+  if (x.is_inf() || y.is_inf()) return F::Infinity();
+  if (x.is_nan() || y.is_nan()) return FloatAccess::PropagateNaN(x, y, env);
+  F a = abs(x);
+  F b = abs(y);
+  if (a < b) std::swap(a, b);
+  if (b.is_zero()) return a;
+  // Then b / a < 2^-(P + 2), and hypot(a, b) - a < a 2^-(2P + 4).
+  if (std::int64_t{a.raw_exponent()} - b.raw_exponent() > F::kPrecision + 2) {
+    return RoundBeside(a, true, env);
+  }
+  // Within 2 u in the first working format: a^2 + b^2 within 1.5 u, its root
+  // within 0.75 u, and 0.5 u more for rounding the root.
+  using W = Wide1<F>;
+  const W wa = FloatAccess::Convert<W>(a, NearestEnv{});
+  const W wb = FloatAccess::Convert<W>(b, NearestEnv{});
+  const W root = sqrt(wa * wa + wb * wb);
+  // Exact results have at most P + 1 bits too, so this never decides one.
+  F result;
+  if (RoundClearOfBoundaries(root, W::kPrecision - 4, env, result)) {
+    return result;
+  }
+  // Exactly then, with x^2 + y^2 exact.
+  using Exact = HypotWorking<F>;
+  const Exact ea = FloatAccess::Convert<Exact>(a, NearestEnv{});
+  const Exact eb = FloatAccess::Convert<Exact>(b, NearestEnv{});
+  Context context{Rounding::kTowardZero};
+  const Exact exact_root = sqrt(ea * ea + eb * eb, context);
+  return RoundTruncated<F>(false, exact_root,
+                           (context.flags & kFlagInexact) != 0, env);
+}
+
+// The precision in which a W-precision Newton step can take its start and
+// compute its correction.
+template <class W>
+using HalfWorking = Float<64 * ((W::kPrecision / 2 + 16 + 63) / 64), 29>;
+
+// m^(-1/3) for m in [1, 8), with a relative error below 2 u. Newton's
+// iteration z <- z + z (1 - m z^3) / 3 takes the relative error from e to
+// about 2 e^2, without a division, and adds below 1.4 u of rounding, which the
+// next step removes. Wide formats start from a root in about half their
+// precision, and compute the correction in that precision.
+template <class W>
+W InverseCbrtOfReduced(const W& m) {
+  const W one(1);
+  if constexpr (W::kPrecision <= 128) {
+    // The double estimate is within e = 2^-50. With r = 1 - m z^3, the root is
+    // z (1 - r)^(-1/3) = z (1 + r/3 + 2r^2/9 + 14r^3/81 + ...), so one step
+    // of z <- z (1 + r (3 + 2r) / 9) leaves about 14 (3e)^3 / 81 < 2^-147.
+    W z(1.0 / std::cbrt(static_cast<double>(m)));
+    const W residual = one - m * ((z * z) * z);
+    if (residual.is_zero()) return z;
+    return z + DivSmall(z * (residual * (W(3) + scalbn(residual, 1))), 9);
+  } else if constexpr (W::kPrecision <= 360) {
+    // The same third-order step from a 128-bit root, within 2^-126.6, leaves
+    // below 2^-377.
+    using S = Float<128, 29>;
+    const W z = FloatAccess::Convert<W>(
+        InverseCbrtOfReduced(FloatAccess::Convert<S>(m, NearestEnv{})),
+        NearestEnv{});
+    const W residual = one - m * ((z * z) * z);
+    if (residual.is_zero()) return z;
+    return z + DivSmall(z * (residual * (W(3) + scalbn(residual, 1))), 9);
+  } else {
+    // The half-precision root is within 2^-(H - 2), so one step leaves
+    // 2^-(2H - 3) < 2^-(kPrecision + 28) besides the rounding.
+    using H = HalfWorking<W>;
+    const H half =
+        InverseCbrtOfReduced(FloatAccess::Convert<H>(m, NearestEnv{}));
+    const W z = FloatAccess::Convert<W>(half, NearestEnv{});
+    const W residual = one - m * ((z * z) * z);
+    if (residual.is_zero()) return z;
+    const H correction =
+        DivSmall(half * FloatAccess::Convert<H>(residual, NearestEnv{}), 3);
+    return z + FloatAccess::Convert<W>(correction, NearestEnv{});
+  }
+}
+
+// cbrt(m) for m in [1, 8), with a relative error below 5 u.
+template <class W>
+W CbrtOfReduced(const W& m) {
+  if constexpr (W::kPrecision <= 128) {
+    // From z within 2 u, m z^2 is within 5 u.
+    const W z = InverseCbrtOfReduced(m);
+    return m * (z * z);
+  } else {
+    // One Newton step y <- y - (y^3 - m) z^2 / 3 on y = m z^2 from half the
+    // precision, where 1 / y^2 = z^2 to that precision. That leaves the
+    // rounding of y^3, at most 0.7 u, and of the step, 0.5 u.
+    using H = HalfWorking<W>;
+    const H mh = FloatAccess::Convert<H>(m, NearestEnv{});
+    const H z = InverseCbrtOfReduced(mh);
+    const H z2 = z * z;
+    const W y = FloatAccess::Convert<W>(mh * z2, NearestEnv{});
+    const W residual = (y * y) * y - m;
+    if (residual.is_zero()) return y;
+    const H correction =
+        DivSmall(FloatAccess::Convert<H>(residual, NearestEnv{}) * z2, 3);
+    return y - FloatAccess::Convert<W>(correction, NearestEnv{});
+  }
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F CbrtImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf() || x.is_zero()) return x;
+  const bool negative = x.signbit();
+  const F magnitude = abs(x);
+  // |x| = 2^(3k) m with m in [1, 8).
+  const std::int64_t e = x.raw_exponent();
+  const std::int64_t k = (e >= 0 ? e : e - 2) / 3;
+  // The root is exact only if x = a 2^b, a odd, has 3 | b and a a cube.
+  const std::int64_t low = LowestBitExponent(x);
+  const std::int64_t bits = SignificantBits(x);
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    const W m = scalbn(FloatAccess::Convert<W>(magnitude, NearestEnv{}),
+                       static_cast<int>(-3 * k));
+    const W y = scalbn(CbrtOfReduced(m), static_cast<int>(k));
+    const W signed_y = negative ? -y : y;
+    constexpr int kBits = W::kPrecision - LostBits(5);
+    // An exact root has at most P bits, so this never decides one.
+    if (RoundClearOfBoundaries(signed_y, kBits, env, result)) return true;
+    if (low % 3 == 0) {
+      const F root = FloatAccess::Convert<F>(y, NearestEnv{});
+      const std::int64_t root_bits = SignificantBits(root);
+      if (3 * root_bits - 2 <= bits && bits <= 3 * root_bits) {
+        using Cube = Float<3 * F::kPrecision, 29>;
+        const Cube c = FloatAccess::Convert<Cube>(root, NearestEnv{});
+        if (c * c * c == FloatAccess::Convert<Cube>(magnitude, NearestEnv{})) {
+          result = negative ? -root : root;
+          return true;
+        }
+      }
+    }
+    return RoundTranscendental(signed_y, kBits, last, env, result);
+  });
+}
+
+// Rounds x^y for a finite positive x != 1 and a finite nonzero y if it has at
+// most P + 1 bits, which covers every exact result and every tie. Returns
+// false if it has more. |log2(x^y)| must be below 2^27.
+template <class F, class Env>
+bool ExactPow(const F& x, const F& y, bool negative, const Env& env,
+              F& result) {
+  const std::int64_t low = LowestBitExponent(x);
+  if (SignificantBits(x) == 1) {
+    // x = 2^low, and x^y is exact if low y is an integer.
+    using W = Wide1<F>;  // low * y is exact.
+    const W product = W(low) * FloatAccess::Convert<W>(y, NearestEnv{});
+    if (!IsInteger(product)) return false;
+    const limb_t top_bit = limb_t{1} << (kLimbBits - 1);
+    result = FloatAccess::Round<F>(
+        negative, to_integer<std::int64_t>(product, Rounding::kTowardZero),
+        &top_bit, 1, false, env);
+    return true;
+  }
+  // x = a 2^low with a odd and above 1, so x^y needs y = n / 2^s with n > 0
+  // and x a perfect 2^s-th power, z^(2^s) = x; then x^y = z^n.
+  const std::int64_t s = (std::max)(std::int64_t{0}, -LowestBitExponent(y));
+  // a >= 3 has at least 1.5 * 2^s bits.
+  if (y.signbit() || (s > 0 && (s > 20 || (std::int64_t{1} << s) >=
+                                              SignificantBits(x)))) {
+    return false;
+  }
+  F z = x;
+  for (std::int64_t i = 0; i < s; ++i) {
+    Context context;
+    z = sqrt(z, context);
+    if (context.flags != 0) return false;
+  }
+  const F n_float = scalbn(y, static_cast<int>(s));
+  if (n_float >= F(static_cast<double>(F::kPrecision) + 1)) return false;
+  const auto n = to_integer<std::int64_t>(n_float, Rounding::kTowardZero);
+  // a^n, for z = a' 2^z_low, has at least n (bits - 1) + 1 bits.
+  const std::int64_t z_low = LowestBitExponent(z);
+  if (n * (SignificantBits(z) - 1) > F::kPrecision) return false;
+  // So z^n has at most 2P bits, and every partial product is exact.
+  using W = MathWorking<F, 2>;
+  W base = scalbn(FloatAccess::Convert<W>(z, NearestEnv{}),
+                  static_cast<int>(-z_low));
+  W power(1);
+  for (std::int64_t rest = n;;) {
+    if ((rest & 1) != 0) power = power * base;
+    rest >>= 1;
+    if (rest == 0) break;
+    base = base * base;
+  }
+  if (SignificantBits(power) > F::kPrecision + 1) return false;
+  result = FloatAccess::Round<F>(negative, power.raw_exponent() + z_low * n,
+                                 power.raw_limbs().data(), W::kLimbs, false,
+                                 env);
+  return true;
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F PowImpl(const F& x, const F& y, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  // The special cases of IEEE 754 and C99 Annex F.
+  if (x.is_signaling() || y.is_signaling()) {
+    return FloatAccess::PropagateNaN(x, y, env);
+  }
+  const F one(1);
+  if (y.is_zero() || x == one) return one;
+  if (x.is_nan() || y.is_nan()) return FloatAccess::PropagateNaN(x, y, env);
+  const F magnitude = abs(x);
+  if (y.is_inf()) {
+    if (magnitude == one) return one;
+    return (magnitude > one) == y.signbit() ? F::Zero() : F::Infinity();
+  }
+  const bool odd = LowestBitExponent(y) == 0;
+  const bool negative = x.signbit() && odd;
+  if (x.is_zero()) {
+    if (!y.signbit()) return F::Zero(negative);
+    env.raise(kFlagDivByZero);
+    return F::Infinity(negative);
+  }
+  if (x.is_inf()) return y.signbit() ? F::Zero(negative) : F::Infinity(negative);
+  if (x.signbit() && !IsInteger(y)) return InvalidResult<F>(env);
+  if (magnitude == one) return negative ? -one : one;
+
+  // t = y log|x|, with |x^y| = e^t.
+  using W1 = Wide1<F>;
+  int log_units;
+  std::int64_t log_exponent;
+  W1 log_m;
+  const W1 y1 = FloatAccess::Convert<W1>(y, NearestEnv{});
+  const W1 t1 =
+      y1 * LogKernel<W1, true>(FloatAccess::Convert<W1>(magnitude, NearestEnv{}),
+                               log_units, log_exponent, log_m);
+  // As for exp, with a relative error of t far below these margins.
+  if (t1 >= W1(F::kEmax + 2)) return RoundOverflow<F>(negative, env);
+  if (t1 <= W1(-(F::kEmax + F::kPrecision + 4))) {
+    return RoundTiny<F>(negative, env);
+  }
+  if (t1.raw_exponent() <= -(F::kPrecision + 4)) {
+    return RoundBeside(negative ? -one : one, (t1 > W1::Zero()) != negative,
+                       env);
+  }
+  {
+    F exact;
+    if (ExactPow(magnitude, y, negative, env, exact)) return exact;
+  }
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, W1>;
+    W t;
+    int units_log;
+    if constexpr (kFirst) {
+      t = t1;
+      units_log = log_units;
+    } else {
+      std::int64_t e;
+      W m;
+      t = FloatAccess::Convert<W>(y, NearestEnv{}) *
+          LogKernel<W>(FloatAccess::Convert<W>(magnitude, NearestEnv{}),
+                       units_log, e, m);
+    }
+    // t has a relative error below (units_log + 1) u, so an absolute one
+    // below |t| (units_log + 1) u, which carries over to e^t relatively.
+    // The reduction is exact up to 0.36 u since |t| < 2^26.
+    std::int64_t k;
+    const W r = ReduceByLn2<W>(t, k);
+    int units_exp;
+    const W q = ExpM1Reduced<W, kFirst>(r, units_exp);
+    const W value = scalbn(q + W(1), static_cast<int>(k));
+    const std::int64_t size =
+        t.raw_exponent() >= 0 ? std::int64_t{2} << t.raw_exponent() : 1;
+    const std::int64_t units = units_exp + 4 + size * (units_log + 2);
+    return RoundTranscendental(negative ? -value : value,
+                               W::kPrecision - LostBitsWide(units), last, env,
+                               result);
+  });
+}
+
 }  // namespace detail
 
 // e^x.
@@ -888,6 +1248,41 @@ Float<P, E> log1p(const Float<P, E>& x) {
 template <int P, int E>
 Float<P, E> log1p(const Float<P, E>& x, Context& context) {
   return detail::Log1pImpl(x, detail::ContextEnv{context});
+}
+
+// x^y, with the special cases of IEEE 754: pow(x, +-0) and pow(1, y) are 1
+// even for a quiet NaN, a negative x needs an integer y, and pow(+-0, y) for
+// y < 0 is an infinity and raises divide by zero. Exact results, such as
+// pow(9, 1.5), raise no flags.
+template <int P, int E>
+Float<P, E> pow(const Float<P, E>& x, const Float<P, E>& y) {
+  return detail::PowImpl(x, y, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> pow(const Float<P, E>& x, const Float<P, E>& y, Context& context) {
+  return detail::PowImpl(x, y, detail::ContextEnv{context});
+}
+
+// The real cube root, exact for perfect cubes.
+template <int P, int E>
+Float<P, E> cbrt(const Float<P, E>& x) {
+  return detail::CbrtImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> cbrt(const Float<P, E>& x, Context& context) {
+  return detail::CbrtImpl(x, detail::ContextEnv{context});
+}
+
+// sqrt(x^2 + y^2) without intermediate overflow or underflow. An infinity
+// gives +infinity even with a quiet NaN.
+template <int P, int E>
+Float<P, E> hypot(const Float<P, E>& x, const Float<P, E>& y) {
+  return detail::HypotImpl(x, y, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> hypot(const Float<P, E>& x, const Float<P, E>& y,
+                  Context& context) {
+  return detail::HypotImpl(x, y, detail::ContextEnv{context});
 }
 
 }  // namespace mpfix

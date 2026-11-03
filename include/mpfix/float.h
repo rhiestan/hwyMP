@@ -2269,6 +2269,13 @@ struct FloatAccess {
   static F PropagateNaN(const F& x, const Env& env) noexcept {
     return F::PropagateNaN(x, x, env);
   }
+
+  // The first NaN of two operands, at least one a NaN, quieted, raising
+  // invalid if either was signaling.
+  template <class F, class Env>
+  static F PropagateNaN(const F& x, const F& y, const Env& env) noexcept {
+    return F::PropagateNaN(x, y, env);
+  }
 };
 
 template <class To, class From>

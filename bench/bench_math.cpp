@@ -1,12 +1,13 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Single-threaded throughput of the exponentials and logarithms, on identical
-// arguments for every library, all rounding to nearest. Exponentials take
-// arguments in (-20, 20); logarithms take positive values with binary
-// exponents in [-20, 20); expm1 and log1p take arguments below 1/4 in
-// magnitude. MPFR runs at the format's precision; Boost.Multiprecision's
-// cpp_bin_float has exp and log only.
+// Single-threaded throughput of the exponentials, logarithms, powers and
+// roots, on identical arguments for every library, all rounding to nearest.
+// Exponentials take arguments in (-20, 20); logarithms and cbrt take positive
+// values with binary exponents in [-20, 20); expm1 and log1p take arguments
+// below 1/4 in magnitude; pow takes x as for log and y as for exp. MPFR runs
+// at the format's precision; Boost.Multiprecision's cpp_bin_float is timed for
+// exp, log and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -132,6 +133,8 @@ void ReportFormat(const char* format) {
        mpfr_log10, nullptr},
       {"log1p", Range::kSmall, [](const F& x) { return mpfix::log1p(x); },
        mpfr_log1p, nullptr},
+      {"cbrt", Range::kLog, [](const F& x) { return mpfix::cbrt(x); },
+       mpfr_cbrt, nullptr},
   };
 
   for (const Case& c : cases) {
@@ -184,6 +187,87 @@ void ReportFormat(const char* format) {
                   mpfix_ns, mpfr_ns, "-", mpfr_ns / mpfix_ns);
     }
     for (auto& x : mpfr_values) mpfr_clear(&x);
+    mpfr_clear(out);
+  }
+
+  // pow takes x as for log and y as for exp; hypot takes two values as for
+  // log.
+  struct BinaryCase {
+    const char* name;
+    Range y_range;
+    F (*mpfix_fn)(const F&, const F&);
+    int (*mpfr_fn)(mpfr_ptr, mpfr_srcptr, mpfr_srcptr, mpfr_rnd_t);
+    Boost (*boost_fn)(const Boost&, const Boost&);
+  };
+  const BinaryCase binary_cases[] = {
+      {"pow", Range::kExp,
+       [](const F& x, const F& y) { return mpfix::pow(x, y); }, mpfr_pow,
+       [](const Boost& x, const Boost& y) { return Boost(pow(x, y)); }},
+      {"hypot", Range::kLog,
+       [](const F& x, const F& y) { return mpfix::hypot(x, y); }, mpfr_hypot,
+       nullptr},
+  };
+  for (const BinaryCase& c : binary_cases) {
+    const std::vector<F> xs = Arguments<F>(Range::kLog);
+    std::vector<F> ys = Arguments<F>(c.y_range);
+    if (c.y_range == Range::kLog) std::reverse(ys.begin(), ys.end());
+    std::vector<__mpfr_struct> mpfr_xs(kCount);
+    std::vector<__mpfr_struct> mpfr_ys(kCount);
+    std::vector<Boost> boost_xs(kCount);
+    std::vector<Boost> boost_ys(kCount);
+    mpfr_t out;
+    mpfr_init2(out, P);
+    for (int i = 0; i < kCount; ++i) {
+      mpfr_init2(&mpfr_xs[i], P);
+      mpfr_init2(&mpfr_ys[i], P);
+      const std::string x_text = mpfix::to_string(xs[i]);
+      const std::string y_text = mpfix::to_string(ys[i]);
+      mpfr_set_str(&mpfr_xs[i], x_text.c_str(), 10, MPFR_RNDN);
+      mpfr_set_str(&mpfr_ys[i], y_text.c_str(), 10, MPFR_RNDN);
+      boost_xs[i] = Boost(x_text);
+      boost_ys[i] = Boost(y_text);
+    }
+    const double mpfix_ns = BestNanoseconds(
+        [&] {
+          std::uint64_t acc = 0;
+          for (int i = 0; i < kCount; ++i) {
+            acc += c.mpfix_fn(xs[i], ys[i]).raw_limbs()[0];
+          }
+          sink = acc;
+        },
+        kCount);
+    const double mpfr_ns = BestNanoseconds(
+        [&] {
+          std::uint64_t acc = 0;
+          for (int i = 0; i < kCount; ++i) {
+            c.mpfr_fn(out, &mpfr_xs[i], &mpfr_ys[i], MPFR_RNDN);
+            acc += static_cast<std::uint64_t>(mpfr_get_exp(out));
+          }
+          sink = acc;
+        },
+        kCount);
+    double boost_ns = 0;
+    if (c.boost_fn != nullptr) {
+      boost_ns = BestNanoseconds(
+          [&] {
+            std::uint64_t acc = 0;
+            for (int i = 0; i < kCount; ++i) {
+              acc += static_cast<std::uint64_t>(
+                  c.boost_fn(boost_xs[i], boost_ys[i]).backend().exponent());
+            }
+            sink = acc;
+          },
+          kCount);
+    }
+    if (boost_ns > 0) {
+      std::printf("%-10s %-6s %10.1f %10.1f %10.1f %8.2fx\n", format, c.name,
+                  mpfix_ns, mpfr_ns, boost_ns, mpfr_ns / mpfix_ns);
+    } else {
+      std::printf("%-10s %-6s %10.1f %10.1f %10s %8.2fx\n", format, c.name,
+                  mpfix_ns, mpfr_ns, "-", mpfr_ns / mpfix_ns);
+    }
+    for (auto& x : mpfr_xs) mpfr_clear(&x);
+    for (auto& y : mpfr_ys) mpfr_clear(&y);
     mpfr_clear(out);
   }
 }
