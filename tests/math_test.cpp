@@ -1,7 +1,7 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Special values, flags and known results of the exponentials and logarithms.
+// Special values, flags and known results of the elementary functions.
 // math_oracle_test compares them against MPFR.
 
 #include "mpfix/math.h"
@@ -126,6 +126,45 @@ TEST(Math, OverflowAndUnderflow) {
   context = Context{Rounding::kDown};
   EXPECT_TRUE(SameBits(log1p(tiny, context), F::Zero()));
   EXPECT_TRUE(SameBits(exp(-tiny, context), next_down(F(1))));
+}
+
+TEST(Math, Hyperbolic) {
+  using F = binary128;
+  const F inf = F::Infinity();
+  const F one(1);
+  EXPECT_TRUE(SameBits(sinh(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(tanh(F::Zero(true)), F::Zero(true)));
+  EXPECT_TRUE(SameBits(cosh(F::Zero(true)), one));
+  EXPECT_TRUE(SameBits(sinh(-inf), -inf));
+  EXPECT_TRUE(SameBits(cosh(-inf), inf));
+  EXPECT_TRUE(SameBits(tanh(-inf), -one));
+  EXPECT_TRUE(SameBits(tanh(F(1000)), one));
+
+  Context context;
+  EXPECT_TRUE(sinh(F::QuietNaN(), context).is_nan());
+  EXPECT_TRUE(cosh(F::Zero(), context) == one);
+  EXPECT_EQ(context.flags, 0u);
+  EXPECT_TRUE(SameBits(sinh(F(-12000), context), -inf));
+  EXPECT_EQ(context.flags, unsigned{kFlagOverflow | kFlagInexact});
+  context = Context{Rounding::kTowardZero};
+  EXPECT_TRUE(SameBits(tanh(F(-1000), context), -next_down(one)));
+  EXPECT_TRUE(SameBits(cosh(F(1e-30), context), one));
+  EXPECT_EQ(context.flags, unsigned{kFlagInexact});
+  context = Context{Rounding::kUp};
+  const F tiny = F::MinSubnormal();
+  EXPECT_TRUE(SameBits(sinh(tiny, context), next_up(tiny)));
+  EXPECT_TRUE(SameBits(tanh(tiny, context), tiny));
+  EXPECT_EQ(context.flags, unsigned{kFlagUnderflow | kFlagInexact});
+
+  for (const double x : {-30.0, -2.0, -0.4, -0.3, -1e-5, 1e-20, 0.25, 0.35,
+                         0.36, 1.0, 5.0, 40.0, 700.0}) {
+    EXPECT_NEAR(static_cast<double>(sinh(F(x))), std::sinh(x),
+                std::abs(std::sinh(x)) * 1e-15);
+    EXPECT_NEAR(static_cast<double>(cosh(F(x))), std::cosh(x),
+                std::cosh(x) * 1e-15);
+    EXPECT_NEAR(static_cast<double>(tanh(F(x))), std::tanh(x),
+                std::abs(std::tanh(x)) * 1e-15);
+  }
 }
 
 TEST(Math, PowSpecialValues) {

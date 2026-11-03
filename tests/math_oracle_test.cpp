@@ -1,13 +1,15 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Differential tests of the exponentials and logarithms against MPFR, in all
-// five rounding modes and with flags, plus direct checks of the error bounds
-// the kernels claim, in every working format. Set MPFIX_TEST_SCALE to
-// multiply the iteration counts.
+// Differential tests of the exponentials, logarithms and hyperbolic functions
+// against MPFR, in all five rounding modes and with flags, plus direct checks
+// of the error bounds the kernels claim, in every working format. Set
+// MPFIX_TEST_SCALE to multiply the iteration counts.
 
+#include <bit>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 
 #include "mpfix/math.h"
 #include "oracle.h"
@@ -17,12 +19,23 @@ namespace {
 
 using namespace test;  // NOLINT
 
-enum class Function { kExp, kExp2, kExpm1, kLog, kLog2, kLog10, kLog1p };
+enum class Function {
+  kExp,
+  kExp2,
+  kExpm1,
+  kLog,
+  kLog2,
+  kLog10,
+  kLog1p,
+  kSinh,
+  kCosh,
+  kTanh
+};
 
-constexpr Function kFunctions[] = {Function::kExp,   Function::kExp2,
-                                   Function::kExpm1, Function::kLog,
-                                   Function::kLog2,  Function::kLog10,
-                                   Function::kLog1p};
+constexpr Function kFunctions[] = {
+    Function::kExp,   Function::kExp2, Function::kExpm1, Function::kLog,
+    Function::kLog2,  Function::kLog10, Function::kLog1p, Function::kSinh,
+    Function::kCosh,  Function::kTanh};
 
 const char* Name(Function f) {
   switch (f) {
@@ -40,6 +53,12 @@ const char* Name(Function f) {
       return "log10";
     case Function::kLog1p:
       return "log1p";
+    case Function::kSinh:
+      return "sinh";
+    case Function::kCosh:
+      return "cosh";
+    case Function::kTanh:
+      return "tanh";
   }
   return "";
 }
@@ -60,6 +79,12 @@ int ApplyMpfr(Function f, mpfr_ptr result, mpfr_srcptr x, mpfr_rnd_t rnd) {
       return mpfr_log10(result, x, rnd);
     case Function::kLog1p:
       return mpfr_log1p(result, x, rnd);
+    case Function::kSinh:
+      return mpfr_sinh(result, x, rnd);
+    case Function::kCosh:
+      return mpfr_cosh(result, x, rnd);
+    case Function::kTanh:
+      return mpfr_tanh(result, x, rnd);
   }
   return 0;
 }
@@ -84,6 +109,12 @@ F ApplyMpfix(Function f, const F& x, Context& context) {
         return log10(x, context);
       case Function::kLog1p:
         return log1p(x, context);
+      case Function::kSinh:
+        return sinh(x, context);
+      case Function::kCosh:
+        return cosh(x, context);
+      case Function::kTanh:
+        return tanh(x, context);
     }
   } else {
     using Env = detail::ContextEnv;
@@ -103,6 +134,12 @@ F ApplyMpfix(Function f, const F& x, Context& context) {
         return detail::Log10Impl<F, Env, kLevel>(x, env);
       case Function::kLog1p:
         return detail::Log1pImpl<F, Env, kLevel>(x, env);
+      case Function::kSinh:
+        return detail::SinhImpl<F, Env, kLevel>(x, env);
+      case Function::kCosh:
+        return detail::CoshImpl<F, Env, kLevel>(x, env);
+      case Function::kTanh:
+        return detail::TanhImpl<F, Env, kLevel>(x, env);
     }
   }
   return x;
@@ -125,6 +162,12 @@ F ApplyMpfix(Function f, const F& x) {
       return log10(x);
     case Function::kLog1p:
       return log1p(x);
+    case Function::kSinh:
+      return sinh(x);
+    case Function::kCosh:
+      return cosh(x);
+    case Function::kTanh:
+      return tanh(x);
   }
   return x;
 }
@@ -150,7 +193,7 @@ Expected<F> ExpectedResult(Function f, const F& x, Rounding mode) {
   Mpfr probe(F::kPrecision);
   apply(probe.get(), MPFR_RNDA);
   if (mpfr_inf_p(probe.get()) && !x.is_inf()) {
-    return {OverflowResult<F>(false, mode),
+    return {OverflowResult<F>(mpfr_signbit(probe.get()) != 0, mode),
             unsigned{kFlagOverflow} | kFlagInexact};
   }
   return RoundExact<F>(apply, mode);
@@ -231,6 +274,13 @@ F RandomArgument(Function f, Random& random) {
       // Near overflow and underflow of the exponentials.
       return regular(F::kExponentBits - 3 +
                      static_cast<std::int32_t>(random.Below(4)));
+    case 4:
+      // Around ln 2 / 2, where the hyperbolic functions change methods, and
+      // around P/2, where tanh reaches one.
+      return random.Below(2) == 0
+                 ? regular(-3 + static_cast<std::int32_t>(random.Below(3)))
+                 : regular(std::bit_width(static_cast<unsigned>(F::kPrecision)) -
+                           3 + static_cast<std::int32_t>(random.Below(3)));
     default: {
       const auto span =
           static_cast<limb_t>(F::kPrecision + F::kExponentBits + 12);
@@ -392,10 +442,63 @@ void CheckTableExpBounds(int iterations, limb_t seed) {
   }
 }
 
+// sinh, cosh and tanh of a > 0 in the working format W of F, with or without
+// tables, against their claimed bounds.
+template <class F, class W>
+void CheckHyperbolicBounds(int iterations, limb_t seed) {
+  constexpr bool kTables = std::is_same_v<W, detail::MathWorking<F, 1>>;
+  Random random(seed);
+  const long precision = W::kPrecision + 128;
+  Mpfr exact(precision);
+  Mpfr error(precision);
+  Mpfr bound(precision);
+  const auto check = [&](const char* name, const W& a, const W& y, int units,
+                         int (*reference)(mpfr_ptr, mpfr_srcptr, mpfr_rnd_t)) {
+    const View<W> view(a);
+    reference(exact.get(), view.get(), MPFR_RNDN);
+    const View<W> y_view(y);
+    mpfr_sub(error.get(), y_view.get(), exact.get(), MPFR_RNDN);
+    mpfr_abs(error.get(), error.get(), MPFR_RNDN);
+    mpfr_mul_2si(bound.get(), exact.get(), -W::kPrecision, MPFR_RNDN);
+    mpfr_mul_si(bound.get(), bound.get(), units, MPFR_RNDN);
+    mpfr_abs(bound.get(), bound.get(), MPFR_RNDN);
+    EXPECT_LE(mpfr_cmp(error.get(), bound.get()), 0)
+        << name << " P=" << W::kPrecision << " tables=" << kTables
+        << " a=" << Hex(a);
+  };
+  for (int i = 0; i < iterations * TestScale(); ++i) {
+    // From 2^-(P/2) to 2^14, mostly around the change of method at 0.35,
+    // with F's precision.
+    const auto exponent =
+        random.Below(2) == 0
+            ? -3 + static_cast<std::int32_t>(random.Below(3))
+            : static_cast<std::int32_t>(random.Below(
+                  static_cast<limb_t>(F::kPrecision / 2 + 14))) -
+                  F::kPrecision / 2;
+    const W a = detail::FloatAccess::Convert<W>(
+        MakeRegular<F>(false, (std::min)(exponent, F::kEmax - 1),
+                       RandomSignificand<F>(random)),
+        detail::NearestEnv{});
+    int units = 0;
+    W y = detail::SinhKernel<W, kTables>(a, units);
+    check("sinh", a, y, units, mpfr_sinh);
+    y = detail::CoshKernel<W, kTables>(a, units);
+    check("cosh", a, y, units, mpfr_cosh);
+    if (a < W(F::kPrecision / 2 + 2)) {
+      y = detail::TanhKernel<W, kTables>(a, units);
+      check("tanh", a, y, units, mpfr_tanh);
+    }
+  }
+}
+
 template <class F>
 void CheckKernelBoundsForAllLevels(int iterations, limb_t seed) {
   CheckTableLogBounds<F>(iterations, seed + 3);
   CheckTableExpBounds<F>(iterations, seed + 4);
+  CheckHyperbolicBounds<F, detail::MathWorking<F, 1>>(iterations, seed + 5);
+  CheckHyperbolicBounds<F, detail::MathWorking<F, 2>>(iterations, seed + 6);
+  CheckHyperbolicBounds<F, detail::MathWorking<F, 4>>(iterations / 4 + 1,
+                                                       seed + 7);
   CheckKernelBounds<detail::MathWorking<F, 1>>(iterations, seed);
   CheckKernelBounds<detail::MathWorking<F, 2>>(iterations, seed + 1);
   CheckKernelBounds<detail::MathWorking<F, 4>>(iterations / 4 + 1, seed + 2);

@@ -24,9 +24,9 @@ std::cout << std::setprecision(40) << y << '\n';
 ```
 
 `mpfix/math.h` adds `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`,
-`pow`, `cbrt` and `hypot`, correctly rounded in every mode, with an optional
-`Context` for the mode and flags. Exact results, such as `pow(9, 1.5)`, raise
-no flags:
+`sinh`, `cosh`, `tanh`, `pow`, `cbrt` and `hypot`, correctly rounded in every
+mode, with an optional `Context` for the mode and flags. Exact results, such as
+`pow(9, 1.5)`, raise no flags:
 
 ```cpp
 #include "mpfix/math.h"
@@ -56,8 +56,8 @@ std::cout << x.format(Eigen::IOFormat(Eigen::FullPrecision)) << '\n';
 
 Tested with Eigen 5.0.1: the LU, QR, Cholesky, SVD and self-adjoint
 eigenvalue decompositions, the real Schur form, inverses and determinants.
-`mpfix/eigen.h` includes `mpfix/math.h`, so Eigen finds `exp`, `log`, `pow`,
-`cbrt` and `hypot`.
+`mpfix/eigen.h` includes `mpfix/math.h`, so Eigen finds `exp`, `log`, `tanh`,
+`pow`, `hypot` and the rest.
 Modules that need the trigonometric functions do not work yet.
 
 ## Building

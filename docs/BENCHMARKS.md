@@ -150,6 +150,25 @@ Most results are decided by the bits of the working value alone: rounding
 boundaries all have at most P + 1 bits, so when the bits below those are
 neither nearly all zeros nor nearly all ones, the value rounds directly.
 
+### Hyperbolic functions
+
+The same benchmark, with arguments as for exp.
+
+| Format | Library | sinh | cosh | tanh |
+|---|---|---:|---:|---:|
+| binary128 | mpfix | 661 | 717 | 670 |
+| | MPFR | 1691 | 1555 | 1345 |
+| | Boost | 6682 | 6441 | 5939 |
+| binary256 | mpfix | 1190 | 1184 | 1196 |
+| | MPFR | 1964 | 1874 | 1969 |
+| | Boost | 18676 | 18633 | 19067 |
+| binary512 | mpfix | 2849 | 2833 | 2907 |
+| | MPFR | 3351 | 3366 | 3417 |
+| | Boost | 82110 | 82311 | 83283 |
+
+All three take e^|x| from the exponential's kernel and cost about as much as
+exp, with one division more; they are 1.2 to 2.6 times faster than MPFR.
+
 ### Powers and roots
 
 The same benchmark. pow takes x as for log and y as for exp; cbrt takes values

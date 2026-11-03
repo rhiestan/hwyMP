@@ -1,13 +1,14 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Single-threaded throughput of the exponentials, logarithms, powers and
-// roots, on identical arguments for every library, all rounding to nearest.
-// Exponentials take arguments in (-20, 20); logarithms and cbrt take positive
-// values with binary exponents in [-20, 20); expm1 and log1p take arguments
-// below 1/4 in magnitude; pow takes x as for log and y as for exp. MPFR runs
-// at the format's precision; Boost.Multiprecision's cpp_bin_float is timed for
-// exp, log and pow only.
+// Single-threaded throughput of the exponentials, logarithms, hyperbolic
+// functions, powers and roots, on identical arguments for every library, all
+// rounding to nearest. Exponentials and the hyperbolic functions take
+// arguments in (-20, 20); logarithms and cbrt take positive values with binary
+// exponents in [-20, 20); expm1 and log1p take arguments below 1/4 in
+// magnitude; pow takes x as for log and y as for exp. MPFR runs at the
+// format's precision; Boost.Multiprecision's cpp_bin_float is timed for exp,
+// log, the hyperbolic functions and pow only.
 
 #include <gmp.h>
 #include <mpfr.h>
@@ -133,6 +134,12 @@ void ReportFormat(const char* format) {
        mpfr_log10, nullptr},
       {"log1p", Range::kSmall, [](const F& x) { return mpfix::log1p(x); },
        mpfr_log1p, nullptr},
+      {"sinh", Range::kExp, [](const F& x) { return mpfix::sinh(x); },
+       mpfr_sinh, [](const Boost& x) { return Boost(sinh(x)); }},
+      {"cosh", Range::kExp, [](const F& x) { return mpfix::cosh(x); },
+       mpfr_cosh, [](const Boost& x) { return Boost(cosh(x)); }},
+      {"tanh", Range::kExp, [](const F& x) { return mpfix::tanh(x); },
+       mpfr_tanh, [](const Boost& x) { return Boost(tanh(x)); }},
       {"cbrt", Range::kLog, [](const F& x) { return mpfix::cbrt(x); },
        mpfr_cbrt, nullptr},
   };

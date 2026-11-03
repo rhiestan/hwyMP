@@ -1,9 +1,10 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Exponentials, logarithms, powers and roots: exp, exp2, expm1, log, log2,
-// log10, log1p, pow, cbrt and hypot, correctly rounded in all five modes, with
-// the IEEE 754 flags when a Context is given.
+// Exponentials, logarithms, hyperbolic functions, powers and roots: exp, exp2,
+// expm1, log, log2, log10, log1p, sinh, cosh, tanh, pow, cbrt and hypot,
+// correctly rounded in all five modes, with the IEEE 754 flags when a Context
+// is given.
 //
 // Each function evaluates in a wider working format with a proven bound on
 // its error, then rounds both ends of the interval that bound gives. If they
@@ -888,6 +889,144 @@ F Log1pImpl(const F& x, const Env& env) {
   });
 }
 
+// --- Hyperbolic functions ---
+//
+// All three take e^a for a = |x| from the exponential's kernel, and none has
+// an exact result besides sinh(0), cosh(0) and tanh(0), since e^a is
+// transcendental for every rational a != 0.
+
+// Whether x^2 < 2^-(P + 2), so that sinh, cosh and tanh differ from x, 1 and x
+// by less than their value times 2^-(P + 2).
+template <class F>
+bool HyperbolicIsLinear(const F& x) {
+  return 2 * std::int64_t{x.raw_exponent()} <= -(F::kPrecision + 4);
+}
+
+// Whether a = |x| makes sinh and cosh overflow: e^a / 2 is far above 2^(kEmax
+// + 1) there. Below, they are evaluated, and RoundTranscendental decides.
+template <class F>
+bool HyperbolicOverflows(const F& a) {
+  return FloatAccess::Convert<Wide1<F>>(a, NearestEnv{}) >=
+         Wide1<F>(F::kEmax + 2);
+}
+
+// sinh a, cosh a and tanh a for a finite a > 0, below the overflow threshold
+// and, for tanh, below P/2 + 2, with a relative error below `units` * u. The
+// first working format reduces through tables.
+template <class W, bool kUseTables>
+W SinhKernel(const W& a, int& units) {
+  std::int64_t k;
+  const W r = ReduceByLn2<W>(a, k);  // Exact if k = 0.
+  const W q = ExpM1Reduced<W, kUseTables>(r, units);
+  const W one(1);
+  if (k == 0) {
+    // sinh a = q (q + 2) / (2 (q + 1)) for q = e^a - 1 in [0, 0.42], which
+    // cancels nothing.
+    units = 2 * units + 8;
+    return scalbn(q * (q + W(2)) / (q + one), -1);
+  }
+  // a >= 0.34, so e^(2a) >= 2, and e^a - e^-a loses at most a factor of
+  // (e^(2a) + 1) / (e^(2a) - 1) <= 3.
+  const W e = scalbn(q + one, static_cast<int>(k));
+  units = 4 * units + 16;
+  return scalbn(e - one / e, -1);
+}
+
+template <class W, bool kUseTables>
+W CoshKernel(const W& a, int& units) {
+  std::int64_t k;
+  const W r = ReduceByLn2<W>(a, k);
+  const W q = ExpM1Reduced<W, kUseTables>(r, units);
+  // (e^a + e^-a) / 2, a sum of positive terms.
+  const W one(1);
+  const W e = scalbn(q + one, static_cast<int>(k));
+  units += 8;
+  return scalbn(e + one / e, -1);
+}
+
+template <class W, bool kUseTables>
+W TanhKernel(const W& a, int& units) {
+  // tanh a = q / (q + 2) for q = e^(2a) - 1, computed as for expm1.
+  std::int64_t k;
+  const W r = ReduceByLn2<W>(scalbn(a, 1), k);
+  W q = ExpM1Reduced<W, kUseTables>(r, units);
+  if (k != 0) {
+    // Within 4 u more for the reduction, as for expm1.
+    q = scalbn(q + W(1), static_cast<int>(k)) - W(1);
+    units = 4 * units + 12;
+  }
+  // Dividing by q + 2 at most doubles the error, and adds 1 u.
+  units = 2 * units + 8;
+  return q / (q + W(2));
+}
+
+enum class Hyperbolic { kSinh, kCosh, kTanh };
+
+// Evaluates sinh, cosh or tanh of |x| and rounds it, with the sign of x for
+// sinh and tanh.
+template <Hyperbolic kKind, class F, int kFirstLevel, class Env>
+F HyperbolicEvaluate(const F& x, const Env& env) {
+  const bool negative = kKind != Hyperbolic::kCosh && x.signbit();
+  return ZivEvaluate<F, kFirstLevel>([&](auto tag, bool last, F& result) {
+    using W = typename decltype(tag)::type;
+    constexpr bool kFirst = std::is_same_v<W, Wide1<F>>;
+    const W a = abs(FloatAccess::Convert<W>(x, NearestEnv{}));
+    int units;
+    W y;
+    if constexpr (kKind == Hyperbolic::kSinh) {
+      y = SinhKernel<W, kFirst>(a, units);
+    } else if constexpr (kKind == Hyperbolic::kCosh) {
+      y = CoshKernel<W, kFirst>(a, units);
+    } else {
+      y = TanhKernel<W, kFirst>(a, units);
+    }
+    return RoundTranscendental(negative ? -y : y,
+                               W::kPrecision - LostBits(units), last, env,
+                               result);
+  });
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F SinhImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf() || x.is_zero()) return x;
+  const bool negative = x.signbit();
+  // sinh x = x + x^3/6 + ..., always beyond x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, !negative, env);
+  if (HyperbolicOverflows(abs(x))) return RoundOverflow<F>(negative, env);
+  return HyperbolicEvaluate<Hyperbolic::kSinh, F, kFirstLevel>(x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F CoshImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_inf()) return F::Infinity();
+  if (x.is_zero()) return F(1);
+  // cosh x = 1 + x^2/2 + ..., always above 1.
+  if (HyperbolicIsLinear(x)) return RoundBeside(F(1), true, env);
+  if (HyperbolicOverflows(abs(x))) return RoundOverflow<F>(false, env);
+  return HyperbolicEvaluate<Hyperbolic::kCosh, F, kFirstLevel>(x, env);
+}
+
+template <class F, class Env, int kFirstLevel = 1>
+F TanhImpl(const F& x, const Env& env) {
+  static_assert(F::kExponentBits <= 26, "exponent range too wide");
+  if (x.is_nan()) return FloatAccess::PropagateNaN(x, env);
+  if (x.is_zero()) return x;
+  const bool negative = x.signbit();
+  if (x.is_inf()) return negative ? F(-1) : F(1);
+  // tanh x = x - x^3/3 + ..., always closer to zero than x.
+  if (HyperbolicIsLinear(x)) return RoundBeside(x, negative, env);
+  // 1 - tanh a = 2 / (e^(2a) + 1) < 2 e^-(P + 4) < 2^-(P + 2) from a >= P/2 + 2.
+  if (FloatAccess::Convert<Wide1<F>>(abs(x), NearestEnv{}) >=
+      Wide1<F>(F::kPrecision / 2 + 2)) {
+    return RoundBeside(negative ? F(-1) : F(1), negative, env);
+  }
+  return HyperbolicEvaluate<Hyperbolic::kTanh, F, kFirstLevel>(x, env);
+}
+
 // --- Powers and roots ---
 
 // The exact x^2 + y^2 always fits: the exponents differ by at most P + 2.
@@ -1248,6 +1387,36 @@ Float<P, E> log1p(const Float<P, E>& x) {
 template <int P, int E>
 Float<P, E> log1p(const Float<P, E>& x, Context& context) {
   return detail::Log1pImpl(x, detail::ContextEnv{context});
+}
+
+// The hyperbolic sine.
+template <int P, int E>
+Float<P, E> sinh(const Float<P, E>& x) {
+  return detail::SinhImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> sinh(const Float<P, E>& x, Context& context) {
+  return detail::SinhImpl(x, detail::ContextEnv{context});
+}
+
+// The hyperbolic cosine.
+template <int P, int E>
+Float<P, E> cosh(const Float<P, E>& x) {
+  return detail::CoshImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> cosh(const Float<P, E>& x, Context& context) {
+  return detail::CoshImpl(x, detail::ContextEnv{context});
+}
+
+// The hyperbolic tangent.
+template <int P, int E>
+Float<P, E> tanh(const Float<P, E>& x) {
+  return detail::TanhImpl(x, detail::NearestEnv{});
+}
+template <int P, int E>
+Float<P, E> tanh(const Float<P, E>& x, Context& context) {
+  return detail::TanhImpl(x, detail::ContextEnv{context});
 }
 
 // x^y, with the special cases of IEEE 754: pow(x, +-0) and pow(1, y) are 1
