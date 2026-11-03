@@ -252,6 +252,139 @@ TYPED_TEST(EigenDecompositions, MoreAccurateThanDouble) {
   EXPECT_TRUE(error < F(1e10) * Epsilon<F>() * F(100)) << error;
 }
 
+// --- Complex matrices ---
+
+template <class F>
+Matrix<Complex<F>> RandomComplexMatrix(std::mt19937_64& random, int rows,
+                                       int cols) {
+  const Matrix<F> re = RandomMatrix<F>(random, rows, cols);
+  const Matrix<F> im = RandomMatrix<F>(random, rows, cols);
+  Matrix<Complex<F>> m(rows, cols);
+  for (int i = 0; i < rows; ++i) {
+    for (int j = 0; j < cols; ++j) m(i, j) = Complex<F>(re(i, j), im(i, j));
+  }
+  return m;
+}
+
+template <class F>
+F ComplexNorm(const Matrix<Complex<F>>& m) {
+  return m.cwiseAbs().rowwise().sum().maxCoeff();
+}
+
+template <class F>
+void ExpectSmallComplex(const Matrix<Complex<F>>& residual, const F& scale, int n,
+                 const char* what) {
+  const F bound = F(16) * F(n) * Epsilon<F>() * scale;
+  const F error = ComplexNorm<F>(residual);
+  EXPECT_TRUE(error <= bound)
+      << what << ": residual " << std::scientific << std::setprecision(3)
+      << error << ", bound " << bound;
+}
+
+template <class F>
+class EigenComplex : public ::testing::Test {};
+
+using ComplexFormats = ::testing::Types<binary128, binary256>;
+TYPED_TEST_SUITE(EigenComplex, ComplexFormats);
+
+TYPED_TEST(EigenComplex, LinearSolvers) {
+  using F = TypeParam;
+  using C = Complex<F>;
+  std::mt19937_64 random(5);
+  for (const int n : {1, 5, 10}) {
+    const Matrix<C> a = RandomComplexMatrix<F>(random, n, n);
+    const Matrix<C> b = RandomComplexMatrix<F>(random, n, 2);
+    const auto check = [&](const Matrix<C>& x, const char* what) {
+      ExpectSmallComplex<F>(a * x - b, ComplexNorm<F>(a) * ComplexNorm<F>(x) + ComplexNorm<F>(b), n, what);
+    };
+    check(a.partialPivLu().solve(b), "complex PartialPivLU");
+    check(a.fullPivLu().solve(b), "complex FullPivLU");
+    check(a.householderQr().solve(b), "complex HouseholderQR");
+    check(a.colPivHouseholderQr().solve(b), "complex ColPivHouseholderQR");
+    const Matrix<C> inverse = a.inverse();
+    ExpectSmallComplex<F>(a * inverse - Matrix<C>::Identity(n, n),
+                   ComplexNorm<F>(a) * ComplexNorm<F>(inverse), n, "complex inverse");
+
+    // Hermitian positive definite.
+    const Matrix<C> hpd = a.adjoint() * a + C(F(n)) * Matrix<C>::Identity(n, n);
+    const Eigen::LLT<Matrix<C>> llt(hpd);
+    ASSERT_EQ(llt.info(), Eigen::Success);
+    const Matrix<C> l = llt.matrixL();
+    ExpectSmallComplex<F>(l * l.adjoint() - hpd, ComplexNorm<F>(hpd), n, "complex LLT");
+  }
+}
+
+TYPED_TEST(EigenComplex, Decompositions) {
+  using F = TypeParam;
+  using C = Complex<F>;
+  std::mt19937_64 random(6);
+  for (const int n : {1, 6, 10}) {
+    const Matrix<C> a = RandomComplexMatrix<F>(random, n, n);
+    const Matrix<C> identity = Matrix<C>::Identity(n, n);
+
+    const Eigen::JacobiSVD<Matrix<C>, Eigen::ComputeThinU | Eigen::ComputeThinV>
+        svd(a);
+    const Matrix<C> u = svd.matrixU();
+    const Matrix<C> v = svd.matrixV();
+    // The singular values are real, and mix with the complex factors.
+    const Vector<F> s = svd.singularValues();
+    ExpectSmallComplex<F>(u * s.template cast<C>().asDiagonal() * v.adjoint() - a,
+                   ComplexNorm<F>(a), n, "complex JacobiSVD");
+    ExpectSmallComplex<F>(u.adjoint() * u - identity, F(1), n, "complex SVD unitary");
+
+    const Matrix<C> hermitian = a + a.adjoint();
+    const Eigen::SelfAdjointEigenSolver<Matrix<C>> self_adjoint(hermitian);
+    ASSERT_EQ(self_adjoint.info(), Eigen::Success);
+    const Matrix<C> w = self_adjoint.eigenvectors();
+    const Vector<F> lambda = self_adjoint.eigenvalues();
+    ExpectSmallComplex<F>(hermitian * w - w * lambda.template cast<C>().asDiagonal(),
+                   ComplexNorm<F>(hermitian), n, "Hermitian eigenvectors");
+
+    // The complex Schur form and the eigenvalues of a general matrix.
+    const Eigen::ComplexSchur<Matrix<C>> schur(a);
+    ASSERT_EQ(schur.info(), Eigen::Success);
+    const Matrix<C> q = schur.matrixU();
+    const Matrix<C> t = schur.matrixT();
+    ExpectSmallComplex<F>(q * t * q.adjoint() - a, ComplexNorm<F>(a), n, "ComplexSchur");
+    const Eigen::ComplexEigenSolver<Matrix<C>> solver(a);
+    ASSERT_EQ(solver.info(), Eigen::Success);
+    const Matrix<C> vectors = solver.eigenvectors();
+    const Vector<C> values = solver.eigenvalues();
+    ExpectSmallComplex<F>(a * vectors - vectors * values.asDiagonal(),
+                   ComplexNorm<F>(a) * ComplexNorm<F>(vectors), n, "ComplexEigenSolver");
+  }
+}
+
+TEST(EigenComplex, MixedExpressions) {
+  using F = binary128;
+  using C = Complex<F>;
+  Eigen::Matrix<C, 2, 2> m;
+  m << C(F(1), F(1)), C(F(2)), C(F(0), F(-1)), C(F(3), F(2));
+  Eigen::Matrix<F, 2, 2> r;
+  r << F(1), F(2), F(3), F(4);
+  // Real scalars and matrices times complex ones.
+  const Eigen::Matrix<C, 2, 2> scaled = F(2) * m;
+  EXPECT_TRUE(scaled(1, 1) == C(F(6), F(4)));
+  const Eigen::Matrix<C, 2, 2> product = r * m;
+  EXPECT_TRUE(product(0, 0) == C(F(1), F(-1)));
+  const Eigen::Matrix<C, 2, 2> sum = m + r.cast<C>();
+  EXPECT_TRUE(sum(1, 0) == C(F(3), F(-1)));
+  // adjoint, the real and imaginary parts, norms and the trace.
+  EXPECT_TRUE(m.adjoint()(0, 1) == C(F(0), F(1)));
+  EXPECT_TRUE(m.real()(1, 1) == F(3) && m.imag()(0, 0) == F(1));
+  EXPECT_EQ(m.squaredNorm(), F(20));
+  EXPECT_EQ(m.norm(), sqrt(F(20)));
+  EXPECT_TRUE(m.trace() == C(F(4), F(3)));
+  EXPECT_EQ(m.cwiseAbs()(1, 1), sqrt(F(13)));
+  EXPECT_TRUE(m.allFinite());
+  EXPECT_TRUE(m.isApprox(m * C(F(1), scalbn(F(1), -120))));
+  const Eigen::Matrix<C, 2, 1> random = Eigen::Matrix<C, 2, 1>::Random();
+  EXPECT_TRUE(abs(random(0).real()) <= F(1) && abs(random(1).imag()) <= F(1));
+  std::ostringstream out;
+  out << m.row(0);
+  EXPECT_EQ(out.str(), "    (1,1)     (2,0)");
+}
+
 // The example in README.md.
 TEST(Eigen, ReadmeExample) {
   using Matrix =

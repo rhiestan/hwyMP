@@ -52,11 +52,12 @@ The formats are `binary128`, `binary256` and `binary512`, or any
 `mpfix/complex.h` adds `mpfix::Complex<F>`, with `complex128`, `complex256` and
 `complex512`, which has the interface of `std::complex` and the special values
 of C99 Annex G. `std::complex<T>` is unspecified for T other than the built-in
-types, and MSVC's standard library computes its functions in double.
-Addition, subtraction, multiplication, `abs`, `arg` and `norm` are correctly
-rounded in each component; division, `sqrt`, `exp`, `log`, `log10` and the
-trigonometric and hyperbolic functions are within half an ulp plus a tiny
-fraction:
+types, and what the standard libraries make of `std::complex<binary128>`
+differs; see [docs/COMPLEX.md](docs/COMPLEX.md). Addition, subtraction,
+multiplication, `abs`, `arg` and `norm` are correctly rounded in each
+component; division, `sqrt`, `exp`, `log`, `log10`, `pow` and the
+trigonometric and hyperbolic functions and their inverses are within half an
+ulp plus a tiny fraction:
 
 ```cpp
 #include "mpfix/complex.h"
@@ -82,6 +83,13 @@ Tested with Eigen 5.0.1: the LU, QR, Cholesky, SVD and self-adjoint
 eigenvalue decompositions, the real Schur form, inverses and determinants.
 `mpfix/eigen.h` includes `mpfix/math.h`, so Eigen finds `exp`, `log`, `sin`,
 `atan2`, `pow`, `hypot` and the rest.
+
+`mpfix/eigen.h` also makes `mpfix::Complex<F>` a complex scalar, which mixes
+with F in expressions: `Eigen::Matrix<mpfix::complex256, Eigen::Dynamic,
+Eigen::Dynamic>` works with the same decompositions and with `ComplexSchur` and
+`ComplexEigenSolver`. The complex eigenvalues of a real matrix, from
+`EigenSolver`, are `std::complex<F>` in Eigen; see
+[docs/COMPLEX.md](docs/COMPLEX.md).
 
 ## Building
 

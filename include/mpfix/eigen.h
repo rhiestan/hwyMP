@@ -9,6 +9,13 @@
 //
 // Eigen finds abs, sqrt, exp, log, sin, atan2 and the other functions of
 // mpfix/math.h, isnan, isinf and isfinite by argument-dependent lookup.
+//
+// mpfix::Complex<F> of mpfix/complex.h is a complex scalar too, which mixes
+// with F: Eigen::Matrix<mpfix::complex256, Eigen::Dynamic, Eigen::Dynamic> works
+// with the dense decompositions, ComplexSchur and ComplexEigenSolver. Eigen's
+// eigenvalues of real matrices, of EigenSolver, RealSchur's eigenvalues() and
+// the like, are std::complex<F>, which is unspecified for F and does not
+// compile with MSVC's standard library; see docs/COMPLEX.md.
 
 #ifndef MPFIX_EIGEN_H_
 #define MPFIX_EIGEN_H_
@@ -17,6 +24,7 @@
 #include <limits>
 
 #include "mpfix/charconv.h"
+#include "mpfix/complex.h"
 #include "mpfix/float.h"
 #include "mpfix/math.h"
 
@@ -62,6 +70,35 @@ struct NumTraits<mpfix::Float<P, E>> {
     return std::numeric_limits<Real>::max_exponent;
   }
 };
+
+template <int P, int E>
+struct NumTraits<mpfix::Complex<mpfix::Float<P, E>>> {
+  using Real = mpfix::Float<P, E>;
+  using NonInteger = mpfix::Complex<Real>;
+  using Nested = NonInteger;
+  // Real and complex operands mix through Real, as double and
+  // std::complex<double> do.
+  using Literal = Real;
+
+  enum {
+    IsComplex = 1,
+    IsInteger = 0,
+    IsSigned = 1,
+    RequireInitialization = 0,
+    ReadCost = 2 * NumTraits<Real>::ReadCost,
+    AddCost = 2 * NumTraits<Real>::AddCost,
+    MulCost = 4 * NumTraits<Real>::MulCost + 2 * NumTraits<Real>::AddCost
+  };
+
+  static Real epsilon() { return NumTraits<Real>::epsilon(); }
+  static Real dummy_precision() { return NumTraits<Real>::dummy_precision(); }
+  static constexpr int digits() { return P; }
+  static constexpr int digits10() { return NumTraits<Real>::digits10(); }
+  static constexpr int max_digits10() {
+    return NumTraits<Real>::max_digits10();
+  }
+};
+
 
 namespace internal {
 

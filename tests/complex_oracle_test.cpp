@@ -68,19 +68,24 @@ bool WithinUlp(const F& actual, const F& expected) {
 
 enum class Op {
   kAdd, kSub, kMul, kDiv, kSqrt, kExp, kLog, kLog10, kSin, kCos, kTan,
-  kSinh, kCosh, kTanh, kPow
+  kSinh, kCosh, kTanh, kPow, kAsin, kAcos, kAtan, kAsinh, kAcosh, kAtanh
 };
 
 const char* Name(Op op) {
   constexpr const char* kNames[] = {"add", "sub", "mul", "div", "sqrt",
                                     "exp", "log", "log10", "sin", "cos",
-                                    "tan", "sinh", "cosh", "tanh", "pow"};
+                                    "tan", "sinh", "cosh", "tanh", "pow",
+                                    "asin", "acos", "atan", "asinh", "acosh",
+                                    "atanh"};
   return kNames[static_cast<int>(op)];
 }
 
 constexpr Op kUnary[] = {Op::kSqrt, Op::kExp, Op::kLog, Op::kLog10,
                          Op::kSin,  Op::kCos, Op::kTan, Op::kSinh,
                          Op::kCosh, Op::kTanh};
+
+constexpr Op kInverse[] = {Op::kAsin,  Op::kAcos,  Op::kAtan,
+                           Op::kAsinh, Op::kAcosh, Op::kAtanh};
 
 template <class F>
 Complex<F> ApplyMpfix(Op op, const Complex<F>& z, const Complex<F>& w) {
@@ -100,6 +105,12 @@ Complex<F> ApplyMpfix(Op op, const Complex<F>& z, const Complex<F>& w) {
     case Op::kCosh: return cosh(z);
     case Op::kTanh: return tanh(z);
     case Op::kPow: return pow(z, w);
+    case Op::kAsin: return asin(z);
+    case Op::kAcos: return acos(z);
+    case Op::kAtan: return atan(z);
+    case Op::kAsinh: return asinh(z);
+    case Op::kAcosh: return acosh(z);
+    case Op::kAtanh: return atanh(z);
   }
   return z;
 }
@@ -121,6 +132,12 @@ int ApplyMpc(Op op, mpc_ptr result, mpc_srcptr z, mpc_srcptr w) {
     case Op::kCosh: return mpc_cosh(result, z, MPC_RNDNN);
     case Op::kTanh: return mpc_tanh(result, z, MPC_RNDNN);
     case Op::kPow: return mpc_pow(result, z, w, MPC_RNDNN);
+    case Op::kAsin: return mpc_asin(result, z, MPC_RNDNN);
+    case Op::kAcos: return mpc_acos(result, z, MPC_RNDNN);
+    case Op::kAtan: return mpc_atan(result, z, MPC_RNDNN);
+    case Op::kAsinh: return mpc_asinh(result, z, MPC_RNDNN);
+    case Op::kAcosh: return mpc_acosh(result, z, MPC_RNDNN);
+    case Op::kAtanh: return mpc_atanh(result, z, MPC_RNDNN);
   }
   return 0;
 }
@@ -173,7 +190,7 @@ template <class F>
 F RandomPart(Random& random, std::int32_t low, std::int32_t high) {
   if (random.Below(16) == 0) return F::Zero(random.Below(2) != 0);
   low = (std::max)(low, F::kEmin - F::kPrecision + 1);
-  high = (std::min)(high, F::kEmax);
+  high = (std::max)(low, (std::min)(high, F::kEmax));
   const auto span = static_cast<limb_t>(high - low + 1);
   return MakeRegular<F>(random.Below(2) != 0,
                         low + static_cast<std::int32_t>(random.Below(span)),
@@ -192,6 +209,30 @@ Complex<F> NearUnitCircle(Random& random) {
   Complex<F> z(cos(angle), sin(angle));
   if (random.Below(2) == 0) z.real(next_up(z.real()));
   return z;
+}
+
+// Next to the branch points +-1 and +-i of the inverse functions, or to their
+// cuts on the axes beyond them, where 1 -+ z or 1 -+ z^2 nearly vanishes.
+template <class F>
+Complex<F> NearBranchPoint(Random& random) {
+  F near = F(1);
+  if (random.Below(2) == 0) {
+    const F offset = RandomPart<F>(random, -2 * F::kPrecision, 2);
+    near = random.Below(2) == 0 ? near + offset : near - offset;
+  }
+  if (random.Below(2) == 0) near = -near;
+  const F tiny = RandomPart<F>(random, -2 * F::kPrecision, -1);
+  if (random.Below(2) == 0) return {near, tiny};
+  return {tiny, near};
+}
+
+// A value of magnitude about 2^top for a top in [low, high], whose parts are
+// within 2^(2P) of each other.
+template <class F>
+Complex<F> LargeOrSmall(Random& random, std::int32_t low, std::int32_t high) {
+  const auto span = static_cast<limb_t>(high - low + 1);
+  const std::int32_t top = low + static_cast<std::int32_t>(random.Below(span));
+  return RandomComplex<F>(random, top - 2 * F::kPrecision, top);
 }
 
 template <class F>
@@ -249,6 +290,23 @@ void CheckRandomly(int iterations, limb_t seed) {
       }
       if (!Check(op, argument, argument, stats)) return;
     }
+    // The inverse functions also on large and small arguments; InverseExtremes
+    // goes further, where MPC takes long.
+    Complex<F> u = z;
+    if (random.Below(3) == 0) {
+      u = NearBranchPoint<F>(random);
+    } else if (random.Below(4) == 0) {
+      u = LargeOrSmall<F>(random, (std::max)(low, -8 * F::kPrecision),
+                          (std::min)(high, 8 * F::kPrecision));
+    }
+    for (const Op op : kInverse) {
+      // The poles of atanh at +-1 and of atan at +-i.
+      const bool pole = op == Op::kAtanh ? u.imag().is_zero() && abs(u.real()) == F(1)
+                        : op == Op::kAtan ? u.real().is_zero() && abs(u.imag()) == F(1)
+                                          : false;
+      if (pole) continue;
+      if (!Check(op, u, u, stats)) return;
+    }
     const Complex<F> w = RandomComplex<F>(random, -6, 2);
     if (!(z.real().is_zero() && z.imag().is_zero())) {
       if (!Check(Op::kPow, z, w, stats)) return;
@@ -268,6 +326,21 @@ TEST(ComplexOracle, RandomOtherFormats) {
   CheckRandomly<Float<53, 11>>(2000, 4);
   CheckRandomly<Float<24, 8>>(2000, 5);
   CheckRandomly<Float<11, 5>>(2000, 6);
+}
+
+// The inverse functions over the whole exponent range, where MPC takes up to
+// seconds for one value: few of them.
+TEST(ComplexOracle, InverseExtremes) {
+  using F = binary128;
+  Random random(8);
+  Stats stats;
+  for (int i = 0; i < 4 * TestScale(); ++i) {
+    const Complex<F> z =
+        LargeOrSmall<F>(random, F::kEmin - F::kPrecision, F::kEmax);
+    for (const Op op : kInverse) {
+      if (!Check(op, z, z, stats)) return;
+    }
+  }
 }
 
 // abs, arg and norm are correctly rounded.

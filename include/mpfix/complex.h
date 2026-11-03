@@ -9,11 +9,14 @@
 // Addition, subtraction and multiplication are correctly rounded in each
 // component, and so are abs (hypot), arg (atan2), norm, conj and proj.
 // Division is within half an ulp plus 2^-(3P) ulp in each component. The
-// functions sqrt, exp, log, log10, sin, cos, tan, sinh, cosh and tanh are
-// evaluated with the correctly rounded real functions in P + 64 bits and
-// formulas without cancellation, then rounded once: within half an ulp plus
-// about 2^-60 ulp in each component, and correctly rounded where they reduce
-// to real functions, as on the real axis. pow is exp(w log z), whose error is
+// functions sqrt, exp, log, log10, sin, cos, tan, sinh, cosh, tanh and their
+// inverses asin, acos, atan, asinh, acosh and atanh are evaluated with the
+// correctly rounded real functions in P + 64 bits and formulas without
+// cancellation, then rounded once: within half an ulp plus about 2^-60 ulp in
+// each component, and correctly rounded where they reduce to real functions,
+// as on the real axis. The inverses have the principal values and branch cuts
+// of C99 and std::complex, continuous with the quadrant the signed zero of the
+// part on the cut points to. pow is exp(w log z), whose error is
 // relative to |z^w| rather than to each component; integer powers up to 64
 // multiply instead. Everything rounds to nearest; there is no Context.
 
@@ -23,6 +26,7 @@
 #include <algorithm>
 #include <bit>
 #include <ostream>
+#include <type_traits>
 
 #include "mpfix/charconv.h"
 #include "mpfix/float.h"
@@ -84,6 +88,11 @@ class Complex {
   Complex() noexcept : re_(F::Zero()), im_(F::Zero()) {}
   Complex(const F& re, const F& im = F::Zero()) noexcept  // NOLINT
       : re_(re), im_(im) {}
+  // From built-in numbers, as std::complex<double> takes ints: z = 0.
+  template <class T>
+    requires std::is_arithmetic_v<T>
+  Complex(T re) noexcept  // NOLINT
+      : re_(re), im_(F::Zero()) {}
 
   F real() const noexcept { return re_; }
   F imag() const noexcept { return im_; }
@@ -636,6 +645,241 @@ Complex<F> polar(const F& r, const F& theta = F::Zero()) {
   using W = detail::CW<F>;
   const W wr(r), wt(theta);
   return {F(wr * cos(wt)), F(wr * sin(wt))};
+}
+
+namespace detail {
+
+template <class F>
+F HalfPi() {
+  return scalbn(pi<F>(), -1);
+}
+
+// pi k / 4 for k = 1 or 3, of the special values.
+template <class F>
+F QuarterPi(int k) {
+  using W = CW<F>;
+  return F(scalbn(W(k) * pi<W>(), -2));
+}
+
+// sqrt(u + iv) for v != 0 by Kahan's method, in u and v's format; each part
+// has a small relative error.
+template <class W>
+Complex<W> SqrtParts(const W& u, const W& v) {
+  const W t = sqrt(scalbn(abs(u) + hypot(u, v), -1));
+  const W other = v / scalbn(t, 1);
+  if (!u.signbit()) return {t, other};
+  return {abs(other), copysign(t, v)};
+}
+
+// The inverse functions by Kahan's formulas ("Branch Cuts for Complex
+// Elementary Functions", 1987), from the square roots a + ib and c + id of
+// z -+ 1 or 1 -+ z: the sums of products they take have terms of like sign, so
+// every step has a small relative error and no step cancels. The axes, where
+// the results are real functions or pi/2, are correctly rounded.
+
+// asin z = atan(x / Re(sqrt(1 - z) sqrt(1 + z)))
+//          + i asinh(Im(conj(sqrt(1 - z)) sqrt(1 + z))), for finite z.
+template <class F>
+Complex<F> AsinFinite(const F& x, const F& y) {
+  if (y.is_zero()) {
+    if (abs(x) <= F(1)) return {asin(x), y};
+    return {copysign(HalfPi<F>(), x), copysign(acosh(abs(x)), y)};
+  }
+  if (x.is_zero()) return {x, asinh(y)};
+  using W = CW<F>;
+  const W wx(x), wy(y), one(1);
+  const Complex<W> s = SqrtParts(one - wx, -wy);
+  const Complex<W> t = SqrtParts(one + wx, wy);
+  // Im s and Im t have opposite signs.
+  const W re = s.real() * t.real() - s.imag() * t.imag();
+  const W im = s.real() * t.imag() - s.imag() * t.real();
+  return {F(atan(wx / re)), F(asinh(im))};
+}
+
+// acos z = 2 atan(Re sqrt(1 - z) / Re sqrt(1 + z))
+//          + i asinh(Im(conj(sqrt(1 + z)) sqrt(1 - z))), for finite z.
+template <class F>
+Complex<F> AcosFinite(const F& x, const F& y) {
+  if (y.is_zero()) {
+    if (abs(x) <= F(1)) return {acos(x), -y};
+    return {x.signbit() ? pi<F>() : F::Zero(), -copysign(acosh(abs(x)), y)};
+  }
+  if (x.is_zero()) return {HalfPi<F>(), -asinh(y)};
+  using W = CW<F>;
+  const W wx(x), wy(y), one(1);
+  const Complex<W> s = SqrtParts(one - wx, -wy);
+  const Complex<W> t = SqrtParts(one + wx, wy);
+  const W im = t.real() * s.imag() - t.imag() * s.real();
+  return {F(scalbn(atan(s.real() / t.real()), 1)), F(asinh(im))};
+}
+
+// acosh z = asinh(Re(conj(sqrt(z - 1)) sqrt(z + 1)))
+//           + i 2 atan(Im sqrt(z - 1) / Re sqrt(z + 1)), for finite z.
+template <class F>
+Complex<F> AcoshFinite(const F& x, const F& y) {
+  if (y.is_zero()) {
+    if (x >= F(1)) return {acosh(x), y};
+    if (x > F(-1)) return {F::Zero(), copysign(acos(x), y)};
+    return {acosh(-x), copysign(pi<F>(), y)};
+  }
+  if (x.is_zero()) return {asinh(abs(y)), copysign(HalfPi<F>(), y)};
+  using W = CW<F>;
+  const W wx(x), wy(y), one(1);
+  const Complex<W> s = SqrtParts(wx - one, wy);
+  const Complex<W> t = SqrtParts(wx + one, wy);
+  // Im s and Im t have the same sign.
+  const W re = s.real() * t.real() + s.imag() * t.imag();
+  return {F(asinh(re)), F(scalbn(atan(s.imag() / t.real()), 1))};
+}
+
+// atanh z = log1p(4x / ((1 - x)^2 + y^2)) / 4
+//           + i atan2(2y, (1 - x)(1 + x) - y^2) / 2, for finite z with x >= 0
+// and by symmetry otherwise. 1 - x^2 - y^2 is computed without rounding first,
+// as in log.
+template <class F>
+Complex<F> AtanhFinite(const F& x, const F& y) {
+  const F ax = abs(x);
+  if (y.is_zero()) {
+    if (ax < F(1)) return {atanh(x), y};
+    if (ax == F(1)) return {copysign(F::Infinity(), x), y};
+  }
+  if (x.is_zero()) return {x, atan(y)};
+  using W = CW<F>;
+  using X = ComplexExact<F>;
+  using S = ComplexSum<F>;
+  const W wx(ax), wy(y), one(1);
+  const W gap = one - wx;
+  const W d = gap * gap + wy * wy;
+  const F re = copysign(F(scalbn(log1p(scalbn(wx, 2) / d), -2)), x);
+  // Beyond 1 on the real axis, the imaginary part is +-pi/2 on either side.
+  if (y.is_zero()) return {re, copysign(HalfPi<F>(), y)};
+  Context context{Rounding::kTowardZero};
+  const S q = sub(sub(S(1), S(X(x) * X(x)), context), S(X(y) * X(y)), context);
+  // atanh(-z) = -atanh(z): the imaginary part of the flipped one, negated, is
+  // that of atan2(2y, q) / 2 with y as it is.
+  return {re, F(scalbn(atan2(scalbn(wy, 1), W(q)), -1))};
+}
+
+// The Annex G special values of asinh and atanh for x + iy with a part
+// infinite or NaN, x and y >= +0 or NaN; the callers give the parts the signs
+// of x and y, as asinh and atanh are odd and commute with conj.
+template <class F>
+Complex<F> AsinhSpecial(const F& x, const F& y) {
+  const F nan = F::QuietNaN();
+  const F inf = F::Infinity();
+  if (y.is_inf()) {
+    if (x.is_nan()) return {inf, nan};
+    return {inf, x.is_inf() ? QuarterPi<F>(1) : HalfPi<F>()};
+  }
+  if (x.is_inf()) return {inf, y.is_nan() ? nan : F::Zero()};
+  if (x.is_nan() && y.is_zero()) return {nan, y};
+  return {nan, nan};
+}
+
+template <class F>
+Complex<F> AtanhSpecial(const F& x, const F& y) {
+  const F nan = F::QuietNaN();
+  if (y.is_inf()) return {F::Zero(), HalfPi<F>()};
+  if (x.is_inf()) return {F::Zero(), y.is_nan() ? nan : HalfPi<F>()};
+  if (x.is_zero() && y.is_nan()) return {x, nan};
+  return {nan, nan};
+}
+
+// Those of acosh for y >= +0 or NaN; the caller gives the imaginary part the
+// sign of y, as acosh commutes with conj.
+template <class F>
+Complex<F> AcoshSpecial(const F& x, const F& y) {
+  const F nan = F::QuietNaN();
+  const F inf = F::Infinity();
+  if (y.is_inf()) {
+    if (x.is_nan()) return {inf, nan};
+    if (x.is_inf()) return {inf, QuarterPi<F>(x.signbit() ? 3 : 1)};
+    return {inf, HalfPi<F>()};
+  }
+  if (x.is_inf()) {
+    if (y.is_nan()) return {inf, nan};
+    return {inf, x.signbit() ? pi<F>() : F::Zero()};
+  }
+  return {nan, nan};
+}
+
+// Those of acos for y >= +0 or NaN; the caller negates the imaginary part for
+// y < 0, as acos commutes with conj.
+template <class F>
+Complex<F> AcosSpecial(const F& x, const F& y) {
+  const F nan = F::QuietNaN();
+  const F inf = F::Infinity();
+  if (y.is_inf()) {
+    if (x.is_nan()) return {nan, -inf};
+    if (x.is_inf()) return {QuarterPi<F>(x.signbit() ? 3 : 1), -inf};
+    return {HalfPi<F>(), -inf};
+  }
+  if (x.is_inf()) {
+    // The sign of the infinite imaginary part is unspecified for y NaN.
+    if (y.is_nan()) return {nan, inf};
+    return {x.signbit() ? pi<F>() : F::Zero(), -inf};
+  }
+  if (x.is_zero() && y.is_nan()) return {HalfPi<F>(), nan};
+  return {nan, nan};
+}
+
+}  // namespace detail
+
+template <class F>
+Complex<F> asin(const Complex<F>& z) {
+  const F x = z.real(), y = z.imag();
+  if (x.is_finite() && y.is_finite()) return detail::AsinFinite(x, y);
+  // asin z = -i asinh(iz).
+  const Complex<F> w = detail::AsinhSpecial(abs(y), abs(x));
+  return {copysign(w.imag(), x), copysign(w.real(), y)};
+}
+
+template <class F>
+Complex<F> asinh(const Complex<F>& z) {
+  const F x = z.real(), y = z.imag();
+  if (x.is_finite() && y.is_finite()) {
+    // asinh z = -i asin(iz).
+    const Complex<F> w = detail::AsinFinite(-y, x);
+    return {w.imag(), -w.real()};
+  }
+  const Complex<F> w = detail::AsinhSpecial(abs(x), abs(y));
+  return {copysign(w.real(), x), copysign(w.imag(), y)};
+}
+
+template <class F>
+Complex<F> acos(const Complex<F>& z) {
+  const F x = z.real(), y = z.imag();
+  if (x.is_finite() && y.is_finite()) return detail::AcosFinite(x, y);
+  const Complex<F> w = detail::AcosSpecial(x, abs(y));
+  if (y.signbit() && !y.is_nan()) return {w.real(), -w.imag()};
+  return w;
+}
+
+template <class F>
+Complex<F> acosh(const Complex<F>& z) {
+  const F x = z.real(), y = z.imag();
+  if (x.is_finite() && y.is_finite()) return detail::AcoshFinite(x, y);
+  const Complex<F> w = detail::AcoshSpecial(x, abs(y));
+  return {w.real(), copysign(w.imag(), y)};
+}
+
+template <class F>
+Complex<F> atanh(const Complex<F>& z) {
+  const F x = z.real(), y = z.imag();
+  if (x.is_finite() && y.is_finite()) return detail::AtanhFinite(x, y);
+  const Complex<F> w = detail::AtanhSpecial(abs(x), abs(y));
+  return {copysign(w.real(), x), copysign(w.imag(), y)};
+}
+
+template <class F>
+Complex<F> atan(const Complex<F>& z) {
+  const F x = z.real(), y = z.imag();
+  // atan z = -i atanh(iz).
+  const Complex<F> w = x.is_finite() && y.is_finite()
+                           ? detail::AtanhFinite(-y, x)
+                           : detail::AtanhSpecial(abs(y), abs(x));
+  if (x.is_finite() && y.is_finite()) return {w.imag(), -w.real()};
+  return {copysign(w.imag(), x), copysign(w.real(), y)};
 }
 
 using complex128 = Complex<binary128>;
