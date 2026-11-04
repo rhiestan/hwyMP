@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libmpc-dev ninja-build
       - name: Build TestFloat
@@ -59,13 +59,13 @@ jobs:
       matrix:
         fuzzer: [fuzz_arithmetic, fuzz_strings]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libmpc-dev ninja-build
       # The corpus grows from run to run: each saves it under a new key and
       # restores the latest.
       - name: Restore the corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: corpus
           key: corpus-${{ matrix.fuzzer }}-${{ github.run_id }}
@@ -84,7 +84,7 @@ jobs:
           build/tests/fuzz/${{ matrix.fuzzer }} -max_total_time=$FUZZ_SECONDS -print_final_stats=1 -artifact_prefix=crash- corpus
       - name: Keep crashing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crash-${{ matrix.fuzzer }}
           path: crash-*

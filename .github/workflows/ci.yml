@@ -40,7 +40,7 @@ jobs:
             sanitize: address,undefined
             fuzz: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -114,7 +114,7 @@ jobs:
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-archives
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Use the runner's vcpkg
         shell: pwsh
@@ -123,15 +123,26 @@ jobs:
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/**') }}
 
+      # Runs vcvarsall.bat of the newest Visual Studio and exports its
+      # environment to the later steps.
       - name: Set up the MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+        shell: pwsh
+        run: |
+          # vcvarsall.bat itself calls vswhere, so put it on the PATH.
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $env:PATH = "$installer;$env:PATH"
+          $vs = & "$installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "No Visual Studio with the C++ x64 tools found" }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
+          cmd /c "`"$vcvars`" x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV }
+          }
+          if ($LASTEXITCODE -ne 0) { throw "vcvarsall.bat failed" }
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
