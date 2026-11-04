@@ -819,10 +819,11 @@ bool CheckHexDigits(const F& x, Rounding mode) {
     ADD_FAILURE() << "to_chars failed for " << Hex(x);
     return false;
   }
-  Rounded actual;
-  from_chars(buffer, result.ptr, actual, std::chars_format::hex);
-  const bool ok =
-      SameResult(actual, expected) && context.flags == expected_context.flags;
+  Rounded actual = Rounded::Zero();
+  const auto parsed =
+      from_chars(buffer, result.ptr, actual, std::chars_format::hex);
+  const bool ok = parsed.ec == std::errc{} && SameResult(actual, expected) &&
+                  context.flags == expected_context.flags;
   if (!ok) {
     ADD_FAILURE() << "P=" << F::kPrecision << " hex digits " << kDigits
                   << " mode=" << static_cast<int>(mode)

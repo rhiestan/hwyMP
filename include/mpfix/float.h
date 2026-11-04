@@ -127,8 +127,10 @@ MPFIX_ALWAYS_INLINE constexpr bool ShouldRoundUp(Rounding mode, bool negative,
 // Shifts the little-endian limb array left by 0 <= count < 64 * N bits.
 template <std::size_t N>
 constexpr void ShiftLeft(std::array<limb_t, N>& x, int count) noexcept {
-  const int words = count / kLimbBits;
-  const int bits = count % kLimbBits;
+  // Unsigned, so that compilers see 0 <= words and 0 <= bits < 64.
+  const auto shift = static_cast<unsigned>(count);
+  const int words = static_cast<int>(shift / kLimbBits);
+  const int bits = static_cast<int>(shift % kLimbBits);
   for (int i = static_cast<int>(N) - 1; i >= 0; --i) {
     const int source = i - words;
     limb_t value = 0;
@@ -146,8 +148,10 @@ constexpr void ShiftLeft(std::array<limb_t, N>& x, int count) noexcept {
 // Shifts the little-endian limb array right by 0 <= count < 64 * N bits.
 template <std::size_t N>
 constexpr void ShiftRight(std::array<limb_t, N>& x, int count) noexcept {
-  const int words = count / kLimbBits;
-  const int bits = count % kLimbBits;
+  // Unsigned, so that compilers see 0 <= words and 0 <= bits < 64.
+  const auto shift = static_cast<unsigned>(count);
+  const int words = static_cast<int>(shift / kLimbBits);
+  const int bits = static_cast<int>(shift % kLimbBits);
   const int size = static_cast<int>(N);
   for (int i = 0; i < size; ++i) {
     const int source = i + words;
@@ -156,8 +160,6 @@ constexpr void ShiftRight(std::array<limb_t, N>& x, int count) noexcept {
       value = x[source];
       if (bits != 0) {
         value >>= bits;
-        // 0 < bits < 64 since count >= 0, which the analyzer cannot see.
-        // NOLINTNEXTLINE(clang-analyzer-core.BitwiseShift)
         if (source + 1 < size) value |= x[source + 1] << (kLimbBits - bits);
       }
     }

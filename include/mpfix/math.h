@@ -733,7 +733,7 @@ bool RoundTranscendental(const W& y, int bits, bool last, const Env& env,
 // Tests set kFirstLevel to start at the second or third format.
 template <class F, int kFirstLevel, class Level>
 F ZivEvaluate(const Level& level) {
-  F result;
+  F result{};  // Every level sets it, but GCC cannot always tell.
   if constexpr (kFirstLevel <= 1) {
     if (level(std::type_identity<MathWorking<F, 1>>{}, false, result)) {
       return result;
