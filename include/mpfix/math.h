@@ -2506,14 +2506,31 @@ Tracked<W> LgammaAny(const W& x) {
   std::int64_t e;
   W log_m;
   const W log_sine = LogKernel<W>(sine.value, log_units, e, log_m);
-  const Tracked<W> minus_log_sine{
-      -log_sine, std::ldexp(log_units + sine.units,
-                            (std::max)(0, -log_sine.raw_exponent()))};
   const Tracked<W> lgamma_reflected =
       LgammaPositive(Tracked<W>{W(1) - x, 1});
+  const Tracked<W> minus_lgamma{-lgamma_reflected.value,
+                                lgamma_reflected.units};
+  // log |sin(pi x)| has an absolute error of this many u.
+  const double absolute = log_units + sine.units;
+  if (log_sine.is_zero()) {
+    // sin(pi x) rounded to 1, whose log is 0 but for that error, which then
+    // counts against the sum: a zero term carries no error in TrackedAdd.
+    Tracked<W> sum =
+        TrackedAdd(GetSpecialConstants<W>().log_pi, minus_lgamma);
+    if (absolute != 0) {
+      sum.units = sum.value.is_zero()
+                      ? 1e300
+                      : sum.units + std::ldexp(absolute,
+                                               (std::max)(0, 1 - sum.value.raw_exponent()));
+    }
+    return sum;
+  }
+  const Tracked<W> minus_log_sine{
+      -log_sine,
+      std::ldexp(absolute, (std::max)(0, -log_sine.raw_exponent()))};
   return TrackedAdd(
       TrackedAdd(GetSpecialConstants<W>().log_pi, minus_log_sine),
-      Tracked<W>{-lgamma_reflected.value, lgamma_reflected.units});
+      minus_lgamma);
 }
 
 // e^t for a tracked t with |t| < 2^30: its absolute error |t| t.units u is a

@@ -192,8 +192,9 @@ template <class F>
 F RandomArgument(Function f, Random& random) {
   const bool negative = random.Below(2) != 0;
   const auto near = [&](const F& v) {
-    // v, or a value next to it in relative distance 2^-(1 .. P + 8).
-    if (random.Below(4) == 0) return v;
+    // v, or a value next to it in relative distance 2^-(1 .. P + 8); zero has
+    // no such neighbours.
+    if (random.Below(4) == 0 || v.is_zero()) return v;
     const auto offset = static_cast<std::int32_t>(
         random.Below(static_cast<limb_t>(F::kPrecision) + 8));
     return v + RandomRegular<F>(random, v.raw_exponent() - 1 - offset,

@@ -677,8 +677,12 @@ std::from_chars_result Parse(const char* first, const char* last, F& value,
     }
     if (q != last && DigitValue(*q, false) >= 0) {
       for (; q != last && DigitValue(*q, false) >= 0; ++q) {
-        if (exponent < kExponentLimit) {
+        // Saturates at kExponentLimit, beyond the reach of any value, without
+        // overflowing on the way.
+        if (exponent < kExponentLimit / 10) {
           exponent = exponent * 10 + DigitValue(*q, false);
+        } else {
+          exponent = kExponentLimit;
         }
       }
       if (exponent_negative) exponent = -exponent;

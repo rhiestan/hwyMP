@@ -127,8 +127,11 @@ struct Checker {
 
   // Compares a float result and flags, the last two fields.
   template <class F>
+  // The flags are read here, after the result is computed: an argument
+  // `context.flags` next to the call that sets them could be read first.
   void Expect(const std::vector<std::string_view>& fields, const F& actual,
-              unsigned flags, bool invalid_optional = false) {
+              const Context& context, bool invalid_optional = false) {
+    const unsigned flags = context.flags;
     const F expected = ReadFloat<F>(fields[fields.size() - 2]);
     unsigned expected_flags =
         static_cast<unsigned>(ParseHex(fields[fields.size() - 1]));
@@ -144,7 +147,8 @@ struct Checker {
 
   template <class I>
   void ExpectInt(const std::vector<std::string_view>& fields, I actual,
-                 unsigned flags) {
+                 const Context& context) {
+    const unsigned flags = context.flags;
     const I expected = ReadInt<I>(fields[1]);
     const unsigned expected_flags =
         static_cast<unsigned>(ParseHex(fields[2]));
@@ -157,7 +161,8 @@ struct Checker {
   }
 
   void ExpectBool(const std::vector<std::string_view>& fields, bool actual,
-                  unsigned flags) {
+                  const Context& context) {
+    const unsigned flags = context.flags;
     const bool expected = fields[2] == "1";
     const unsigned expected_flags =
         static_cast<unsigned>(ParseHex(fields[3]));
@@ -175,29 +180,29 @@ bool FloatOperation(Checker& check, std::string_view op,
   const auto a = [&] { return ReadFloat<F>(f[0]); };
   const auto b = [&] { return ReadFloat<F>(f[1]); };
   if (op == "add") {
-    check.Expect(f, add(a(), b(), context), context.flags);
+    check.Expect(f, add(a(), b(), context), context);
   } else if (op == "sub") {
-    check.Expect(f, sub(a(), b(), context), context.flags);
+    check.Expect(f, sub(a(), b(), context), context);
   } else if (op == "mul") {
-    check.Expect(f, mul(a(), b(), context), context.flags);
+    check.Expect(f, mul(a(), b(), context), context);
   } else if (op == "div") {
-    check.Expect(f, div(a(), b(), context), context.flags);
+    check.Expect(f, div(a(), b(), context), context);
   } else if (op == "rem") {
-    check.Expect(f, remainder(a(), b(), context), context.flags);
+    check.Expect(f, remainder(a(), b(), context), context);
   } else if (op == "sqrt") {
-    check.Expect(f, sqrt(a(), context), context.flags);
+    check.Expect(f, sqrt(a(), context), context);
   } else if (op == "mulAdd") {
     const F x = a(), y = b(), z = ReadFloat<F>(f[2]);
     // IEEE 754 leaves invalid for 0 * inf + qNaN to the implementation.
     const bool zero_times_inf = (x.is_zero() && y.is_inf()) ||
                                 (x.is_inf() && y.is_zero());
     const bool optional = zero_times_inf && z.is_nan() && !z.is_signaling();
-    check.Expect(f, fma(x, y, z, context), context.flags, optional);
+    check.Expect(f, fma(x, y, z, context), context, optional);
   } else if (op == "roundToInt") {
     const F x = a();
     const F z = check.exact ? round_to_integral_exact(x, context)
                             : round_to_integral(x, context);
-    check.Expect(f, z, context.flags);
+    check.Expect(f, z, context);
   } else if (op == "eq" || op == "le" || op == "lt" || op == "eq_signaling" ||
              op == "le_quiet" || op == "lt_quiet") {
     const bool signaling =
@@ -212,7 +217,7 @@ bool FloatOperation(Checker& check, std::string_view op,
     } else {
       result = order < 0;
     }
-    check.ExpectBool(f, result, context.flags);
+    check.ExpectBool(f, result, context);
   } else {
     return false;
   }
@@ -254,7 +259,7 @@ bool CheckLine(Checker& check, const std::vector<std::string_view>& f) {
         using To = decltype(target);
         Context context{check.mode};
         check.Expect(f, convert<To>(ReadFloat<From>(f[0]), context),
-                     context.flags);
+                     context);
         known = true;
       });
       // Float to integer.
@@ -264,7 +269,7 @@ bool CheckLine(Checker& check, const std::vector<std::string_view>& f) {
         const From x = ReadFloat<From>(f[0]);
         const I z = check.exact ? to_integer_exact<I>(x, check.mode, context)
                                 : to_integer<I>(x, check.mode, context);
-        check.ExpectInt(f, z, context.flags);
+        check.ExpectInt(f, z, context);
         known = true;
       });
     });
@@ -275,7 +280,7 @@ bool CheckLine(Checker& check, const std::vector<std::string_view>& f) {
         using To = decltype(target);
         Context context{check.mode};
         check.Expect(f, convert<To>(ReadInt<I>(f[0]), context),
-                     context.flags);
+                     context);
         known = true;
       });
     });
