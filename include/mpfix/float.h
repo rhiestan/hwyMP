@@ -117,7 +117,7 @@ MPFIX_ALWAYS_INLINE constexpr bool ShouldRoundUp(Rounding mode, bool negative,
     case Rounding::kTowardZero:
       return false;
     case Rounding::kUp:
-      return !negative & (round_bit | sticky);
+      return (!negative) & (round_bit | sticky);
     case Rounding::kDown:
       return negative & (round_bit | sticky);
   }
@@ -2122,7 +2122,9 @@ class Float {
   static Float RoundSignificand(bool negative, std::int64_t exponent,
                                 const limb_t* limbs, std::size_t count,
                                 bool sticky, const Env& env) noexcept {
-    Extended value;
+    // Initialized, although the loop sets every limb, for GCC's
+    // -Wmaybe-uninitialized.
+    Extended value{};
     for (std::size_t i = 0; i < kLimbs; ++i) {
       const std::size_t from_top = kLimbs - i;
       value.limbs[i] = from_top <= count ? limbs[count - from_top] : 0;
