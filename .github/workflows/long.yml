@@ -1,0 +1,90 @@
+name: Long runs
+
+# The differential tests at 50 times their usual size, TestFloat at level 2,
+# and the fuzzers for 20 minutes each, weekly and on demand.
+on:
+  schedule:
+    - cron: "30 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: "MPFIX_TEST_SCALE for the oracle tests"
+        default: "50"
+      fuzz_seconds:
+        description: "Seconds for each fuzzer"
+        default: "1200"
+
+permissions:
+  contents: read
+
+env:
+  SCALE: ${{ inputs.scale || '50' }}
+  FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '1200' }}
+
+jobs:
+  oracle:
+    name: Oracle tests, scale ${{ inputs.scale || '50' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libmpc-dev ninja-build
+      - name: Build TestFloat
+        run: |
+          git clone -q https://github.com/ucb-bar/berkeley-softfloat-3.git ../berkeley-softfloat-3
+          git -C ../berkeley-softfloat-3 checkout -q 07ebd29db0cfb55723a79fbbffe99103ef38e305
+          git clone -q https://github.com/ucb-bar/berkeley-testfloat-3.git ../berkeley-testfloat-3
+          git -C ../berkeley-testfloat-3 checkout -q a9c849f1b0eb0264b626d9686ffae167d996e3be
+          make -j4 -C ../berkeley-softfloat-3/build/Linux-x86_64-GCC
+          make -j4 -C ../berkeley-testfloat-3/build/Linux-x86_64-GCC testfloat_gen
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DMPFIX_ENABLE_ORACLE=ON
+          -DMPFIX_TESTFLOAT_GEN=$(realpath ../berkeley-testfloat-3/build/Linux-x86_64-GCC/testfloat_gen)
+          -DMPFIX_TESTFLOAT_LEVEL=2
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: MPFIX_TEST_SCALE=$SCALE ctest --test-dir build -j4 --timeout 14400 --output-on-failure
+
+  fuzz:
+    name: Fuzz ${{ matrix.fuzzer }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        fuzzer: [fuzz_arithmetic, fuzz_strings]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libmpc-dev ninja-build
+      # The corpus grows from run to run: each saves it under a new key and
+      # restores the latest.
+      - name: Restore the corpus
+        uses: actions/cache@v4
+        with:
+          path: corpus
+          key: corpus-${{ matrix.fuzzer }}-${{ github.run_id }}
+          restore-keys: corpus-${{ matrix.fuzzer }}-
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DMPFIX_ENABLE_ORACLE=ON -DMPFIX_BUILD_FUZZERS=ON
+          -DMPFIX_SANITIZE=address,undefined
+      - name: Build
+        run: cmake --build build --target ${{ matrix.fuzzer }}
+      - name: Fuzz
+        run: |
+          mkdir -p corpus
+          build/tests/fuzz/${{ matrix.fuzzer }} -max_total_time=$FUZZ_SECONDS -print_final_stats=1 -artifact_prefix=crash- corpus
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.fuzzer }}
+          path: crash-*

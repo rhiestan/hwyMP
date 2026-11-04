@@ -1,5 +1,16 @@
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Sanitizers for everything built here, googletest included. Undefined
+# behaviour stops the test rather than printing a warning that passes.
+if(MPFIX_SANITIZE)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    message(FATAL_ERROR "MPFIX_SANITIZE is for GCC and Clang")
+  endif()
+  add_compile_options(-fsanitize=${MPFIX_SANITIZE} -fno-sanitize-recover=all
+                      -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${MPFIX_SANITIZE})
+endif()
+
 # Eigen is header-only. SOURCE_SUBDIR points at a directory that does not exist
 # so that its own CMake project, with its tests and options, is not configured.
 FetchContent_Declare(eigen
@@ -40,9 +51,8 @@ else()
 endif()
 include(GoogleTest)
 
-function(mpfix_add_test name)
-  add_executable(${name} ${name}.cpp)
-  target_link_libraries(${name} PRIVATE mpfix GTest::gtest_main ${ARGN})
+# The warnings of everything here.
+function(mpfix_warnings name)
   if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(${name} PRIVATE /W4 /permissive- /Zc:__cplusplus /bigobj)
   elseif(MSVC)
@@ -53,6 +63,12 @@ function(mpfix_add_test name)
   if(WIN32)
     target_compile_definitions(${name} PRIVATE _CRT_SECURE_NO_WARNINGS)
   endif()
+endfunction()
+
+function(mpfix_add_test name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} PRIVATE mpfix GTest::gtest_main ${ARGN})
+  mpfix_warnings(${name})
   gtest_discover_tests(${name} DISCOVERY_MODE PRE_TEST)
 endfunction()
 
@@ -67,6 +83,40 @@ mpfix_add_test(windows_header_test)
 mpfix_add_test(deps_smoke_test mpfix_eigen)
 mpfix_add_test(eigen_test mpfix_eigen)
 mpfix_add_test(boost_test mpfix_boost)
+
+# Berkeley TestFloat: with MPFIX_TESTFLOAT_GEN set to a testfloat_gen, a test
+# for each function it generates cases for, in binary16, 32, 64 and 128. The
+# checker is always built, so that it compiles everywhere.
+set(MPFIX_TESTFLOAT_GEN "" CACHE FILEPATH
+    "testfloat_gen of Berkeley TestFloat 3e, to check mpfix against")
+set(MPFIX_TESTFLOAT_LEVEL 1 CACHE STRING "testfloat_gen's -level, 1 or 2")
+add_executable(testfloat_check testfloat_check.cpp)
+target_link_libraries(testfloat_check PRIVATE mpfix)
+mpfix_warnings(testfloat_check)
+if(MPFIX_TESTFLOAT_GEN)
+  set(mpfix_testfloat_formats f16 f32 f64 f128)
+  set(mpfix_testfloat_functions)
+  foreach(format IN LISTS mpfix_testfloat_formats)
+    foreach(op add sub mul div rem sqrt mulAdd roundToInt eq le lt
+               eq_signaling le_quiet lt_quiet)
+      list(APPEND mpfix_testfloat_functions ${format}_${op})
+    endforeach()
+    foreach(integer i32 i64 ui32 ui64)
+      list(APPEND mpfix_testfloat_functions
+           ${format}_to_${integer} ${integer}_to_${format})
+    endforeach()
+    foreach(other IN LISTS mpfix_testfloat_formats)
+      if(NOT other STREQUAL format)
+        list(APPEND mpfix_testfloat_functions ${format}_to_${other})
+      endif()
+    endforeach()
+  endforeach()
+  foreach(function IN LISTS mpfix_testfloat_functions)
+    add_test(NAME testfloat.${function}
+             COMMAND testfloat_check "${MPFIX_TESTFLOAT_GEN}" ${function}
+                     ${MPFIX_TESTFLOAT_LEVEL})
+  endforeach()
+endif()
 
 if(MPFIX_ENABLE_ORACLE)
   find_path(MPFIX_GMP_INCLUDE_DIR gmp.h REQUIRED)
@@ -97,4 +147,18 @@ if(MPFIX_ENABLE_ORACLE)
   target_include_directories(mpfix_mpc SYSTEM INTERFACE "${MPFIX_MPC_INCLUDE_DIR}")
   target_link_libraries(mpfix_mpc INTERFACE "${MPFIX_MPC_LIBRARY}" mpfix_oracle)
   mpfix_add_test(complex_oracle_test mpfix_mpc)
+
+  # The fuzz targets on random inputs, with any compiler, as tests; and with
+  # libFuzzer, for Clang.
+  foreach(name fuzz_arithmetic fuzz_strings)
+    add_executable(${name}_random "${PROJECT_SOURCE_DIR}/fuzz/${name}.cpp"
+                   "${PROJECT_SOURCE_DIR}/fuzz/random_main.cpp")
+    target_include_directories(${name}_random PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(${name}_random PRIVATE mpfix mpfix_oracle GTest::gtest)
+    mpfix_warnings(${name}_random)
+    add_test(NAME ${name}_random COMMAND ${name}_random 20000)
+  endforeach()
+  if(MPFIX_BUILD_FUZZERS)
+    add_subdirectory("${PROJECT_SOURCE_DIR}/fuzz" fuzz)
+  endif()
 endif()

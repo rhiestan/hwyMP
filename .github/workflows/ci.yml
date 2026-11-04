@@ -21,6 +21,7 @@ jobs:
             os: ubuntu-24.04
             cc: gcc
             cxx: g++
+            testfloat: true
           - name: Linux Clang
             os: ubuntu-24.04
             cc: clang
@@ -29,6 +30,14 @@ jobs:
             os: macos-15
             cc: clang
             cxx: clang++
+          # Address and undefined-behaviour sanitizers, optimized as in Release
+          # so that the oracle tests still finish in time.
+          - name: Linux Clang ASan UBSan
+            os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+            sanitize: address,undefined
+            fuzz: true
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +51,19 @@ jobs:
           brew install gmp mpfr libmpc ninja
           echo "CMAKE_PREFIX_PATH=$(brew --prefix gmp);$(brew --prefix mpfr);$(brew --prefix libmpc)" >> "$GITHUB_ENV"
 
+      # Berkeley SoftFloat and TestFloat 3e, at fixed commits, built with
+      # their own Makefiles; testfloat_gen generates the cases and results.
+      - name: Build TestFloat
+        if: matrix.testfloat
+        run: |
+          git clone -q https://github.com/ucb-bar/berkeley-softfloat-3.git ../berkeley-softfloat-3
+          git -C ../berkeley-softfloat-3 checkout -q 07ebd29db0cfb55723a79fbbffe99103ef38e305
+          git clone -q https://github.com/ucb-bar/berkeley-testfloat-3.git ../berkeley-testfloat-3
+          git -C ../berkeley-testfloat-3 checkout -q a9c849f1b0eb0264b626d9686ffae167d996e3be
+          make -j4 -C ../berkeley-softfloat-3/build/Linux-x86_64-GCC
+          make -j4 -C ../berkeley-testfloat-3/build/Linux-x86_64-GCC testfloat_gen
+          echo "TESTFLOAT_GEN=$(realpath ../berkeley-testfloat-3/build/Linux-x86_64-GCC/testfloat_gen)" >> "$GITHUB_ENV"
+
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
@@ -49,12 +71,24 @@ jobs:
           -DCMAKE_C_COMPILER=${{ matrix.cc }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
           -DMPFIX_ENABLE_ORACLE=ON
+          -DMPFIX_SANITIZE=${{ matrix.sanitize }}
+          -DMPFIX_TESTFLOAT_GEN=${{ env.TESTFLOAT_GEN }}
+          -DMPFIX_BUILD_FUZZERS=${{ matrix.fuzz && 'ON' || 'OFF' }}
 
       - name: Build
         run: cmake --build build
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # A minute of each fuzzer on every push; the nightly run goes longer.
+      - name: Fuzz
+        if: matrix.fuzz
+        run: |
+          for fuzzer in fuzz_arithmetic fuzz_strings; do
+            mkdir -p "corpus/$fuzzer"
+            "build/tests/fuzz/$fuzzer" -max_total_time=60 -print_final_stats=1 "corpus/$fuzzer"
+          done
 
   windows:
     name: ${{ matrix.name }}

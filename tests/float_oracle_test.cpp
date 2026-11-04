@@ -42,41 +42,6 @@ const char* Name(Op op) {
   }
 }
 
-// mpfr_sqrt in MPFR 4.2.2 misrounds some radicands whose root has a long run of
-// zeros below the rounding position, at the precisions of binary512 at least:
-// see the Sqrt.Mpfr422Regression test. So the root is taken at much higher
-// precision and proved correct by exact squaring, which needs no trust in
-// mpfr_sqrt, before it is rounded to the precision of `result`.
-int CertifiedSqrt(mpfr_ptr result, mpfr_srcptr a, mpfr_rnd_t rnd) {
-  if (!mpfr_regular_p(a) || mpfr_signbit(a) != 0) {
-    return mpfr_sqrt(result, a, rnd);
-  }
-  const long wide = 2 * static_cast<long>(mpfr_get_prec(result)) +
-                    2 * static_cast<long>(mpfr_get_prec(a)) + 64;
-  Mpfr root(wide);
-  mpfr_sqrt(root.get(), a, MPFR_RNDZ);
-  Mpfr above(wide);
-  mpfr_set(above.get(), root.get(), MPFR_RNDZ);
-  mpfr_nextabove(above.get());
-
-  Mpfr square(2 * wide);
-  mpfr_mul(square.get(), root.get(), root.get(), MPFR_RNDZ);
-  Mpfr square_above(2 * wide);
-  mpfr_mul(square_above.get(), above.get(), above.get(), MPFR_RNDZ);
-  const int order = mpfr_cmp(square.get(), a);
-  if (order > 0 || mpfr_cmp(square_above.get(), a) <= 0) {
-    ADD_FAILURE() << "The wide square root is not the floor of the true root";
-  }
-  if (order == 0) return mpfr_set(result, root.get(), rnd);
-
-  // Strictly between the two neighbours, as the true root is, so it rounds the
-  // same way in every mode.
-  Mpfr between(wide + 1);
-  mpfr_set(between.get(), root.get(), MPFR_RNDZ);
-  mpfr_nextabove(between.get());
-  return mpfr_set(result, between.get(), rnd);
-}
-
 struct MpfrArgs {
   mpfr_srcptr a;
   mpfr_srcptr b;

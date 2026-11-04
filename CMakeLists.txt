@@ -8,6 +8,10 @@ option(MPFIX_USE_LOCAL_DEPS
 option(MPFIX_BUILD_BENCHMARKS "Build benchmarks; needs GMP, MPFR and Boost" OFF)
 option(MPFIX_ENABLE_ORACLE
        "Build tests that need GMP and MPFR; fail if they are missing" OFF)
+option(MPFIX_BUILD_FUZZERS
+       "Build the libFuzzer targets in fuzz/; needs Clang and MPFIX_ENABLE_ORACLE" OFF)
+set(MPFIX_SANITIZE "" CACHE STRING
+    "Sanitizers for the tests and fuzzers, as -fsanitize= lists them, such as address,undefined")
 
 include(FetchContent)
 
