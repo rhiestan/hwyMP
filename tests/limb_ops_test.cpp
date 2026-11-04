@@ -121,6 +121,7 @@ void CheckMul(limb_t a, limb_t b) {
   ASSERT_EQ(hi, expected_hi);
 #if defined(__SIZEOF_INT128__)
   // __int128 is allowed in tests only; it gives an independent reference.
+  // NOLINTNEXTLINE(modernize-use-using): __extension__ needs a typedef.
   __extension__ typedef unsigned __int128 U128;
   const U128 product = static_cast<U128>(a) * b;
   ASSERT_EQ(lo, static_cast<limb_t>(product));

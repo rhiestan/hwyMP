@@ -72,10 +72,10 @@ template <class F>
 struct HwyEngine {
   using Value = F;
   static const char* Name() { return "mpfix"; }
-  static void Init(Value&) {}
+  static void Init(Value& /*x*/) {}
   static void Load(Value& x, const Sample& s) {
     typename F::Limbs limbs;
-    std::copy(s.limbs.begin(), s.limbs.end(), limbs.begin());
+    std::ranges::copy(s.limbs, limbs.begin());
     x = F::FromRaw(s.negative, s.exponent, limbs);
   }
   static void Add(Value& r, const Value& a, const Value& b) { r = a + b; }
@@ -99,7 +99,7 @@ struct MpfrEngine {
     Value& operator=(const Value&) = delete;
   };
   static const char* Name() { return kIeee ? "MPFR IEEE" : "MPFR"; }
-  static void Init(Value&) {}
+  static void Init(Value& /*x*/) {}
   static void Load(Value& v, const Sample& s) {
     std::vector<std::uint64_t> limbs = s.limbs;
     mpfr_t view;
@@ -141,7 +141,7 @@ struct BoostEngine {
           P, boost::multiprecision::backends::digit_base_2>,
       boost::multiprecision::et_off>;
   static const char* Name() { return "Boost"; }
-  static void Init(Value&) {}
+  static void Init(Value& /*x*/) {}
   static void Load(Value& x, const Sample& s) {
     x = 0;
     for (std::size_t i = s.limbs.size(); i-- > 0;) {
@@ -156,7 +156,8 @@ struct BoostEngine {
   static void Sqrt(Value& r, const Value& a) { r = sqrt(a); }
   // Boost has no correctly rounded fused multiply-add for this type.
   static constexpr bool kHasFma = false;
-  static void Fma(Value&, const Value&, const Value&, const Value&) {}
+  static void Fma(Value& /*r*/, const Value& /*a*/, const Value& /*b*/,
+                  const Value& /*c*/) {}
   static std::uint64_t Fingerprint(const Value& x) {
     return static_cast<std::uint64_t>(x.backend().exponent());
   }
@@ -168,10 +169,10 @@ struct BoostEngine {
 struct SoftFloatEngine {
   using Value = float128_t;
   static const char* Name() { return "SoftFloat"; }
-  static void Init(Value&) {}
+  static void Init(Value& /*x*/) {}
   static void Load(Value& x, const Sample& s) {
     mpfix::binary128::Limbs limbs;
-    std::copy(s.limbs.begin(), s.limbs.end(), limbs.begin());
+    std::ranges::copy(s.limbs, limbs.begin());
     const auto bits =
         mpfix::binary128::FromRaw(s.negative, s.exponent, limbs).to_bits();
     x.v[0] = bits[0];
@@ -245,7 +246,7 @@ double BestNanoseconds(Pass pass, int operations) {
     for (int i = 0; i < repeats; ++i) pass();
     const std::chrono::duration<double, std::nano> elapsed =
         Clock::now() - start;
-    best = std::min(best, elapsed.count() / (double(repeats) * operations));
+    best = std::min(best, elapsed.count() / (static_cast<double>(repeats) * operations));
   }
   return best;
 }

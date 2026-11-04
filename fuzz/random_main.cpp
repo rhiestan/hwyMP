@@ -8,10 +8,12 @@
 //
 //   fuzz_arithmetic_random [iterations] | fuzz_arithmetic_random file...
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <random>
@@ -20,6 +22,15 @@
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
                                       std::size_t size);
+
+namespace {
+
+// Reads a decimal number, leaving `value` as it is if there is none.
+void Parse(const char* text, long& value) {
+  std::from_chars(text, text + std::strlen(text), value);
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]).find_first_not_of("0123456789") !=
@@ -33,9 +44,12 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
-  long iterations = argc > 1 ? std::atol(argv[1]) : 10000;
-  if (const char* scale = std::getenv("MPFIX_TEST_SCALE")) {
-    iterations *= std::atol(scale);
+  long iterations = 10000;
+  if (argc > 1) Parse(argv[1], iterations);
+  if (const char* text = std::getenv("MPFIX_TEST_SCALE")) {
+    long scale = 1;
+    Parse(text, scale);
+    iterations *= scale;
   }
   std::mt19937_64 random(12345);
   static constexpr char kNumberChars[] = "0123456789000000.eE-+";

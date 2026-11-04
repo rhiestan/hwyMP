@@ -61,6 +61,15 @@ if(MPFIX_INSTALL)
   install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/mpfix")
 endif()
 
+include(cmake/mpfixWarnings.cmake)
+
+# clang-tidy, with the checks of .clang-tidy, on the tests, fuzzers and
+# benchmarks as they compile, and so on the headers they include.
+option(MPFIX_CLANG_TIDY "Run clang-tidy on the tests, fuzzers and benchmarks" OFF)
+if(MPFIX_CLANG_TIDY)
+  find_program(MPFIX_CLANG_TIDY_EXE NAMES clang-tidy REQUIRED)
+endif()
+
 if(MPFIX_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)

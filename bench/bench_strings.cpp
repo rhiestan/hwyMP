@@ -57,7 +57,7 @@ double BestNanoseconds(Pass pass, int operations) {
     for (int i = 0; i < repeats; ++i) pass();
     const std::chrono::duration<double, std::nano> elapsed =
         Clock::now() - start;
-    best = std::min(best, elapsed.count() / (double(repeats) * operations));
+    best = std::min(best, elapsed.count() / (static_cast<double>(repeats) * operations));
   }
   return best;
 }

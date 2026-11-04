@@ -340,8 +340,7 @@ std::size_t hash_value(const BoostBackend<P, E>& value) noexcept {
 
 }  // namespace mpfix
 
-namespace boost {
-namespace multiprecision {
+namespace boost::multiprecision {
 
 template <int P, int E>
 struct number_category<mpfix::boost_backend<P, E>>
@@ -381,13 +380,14 @@ number<mpfix::boost_backend<P, E>, ET> nextafter BOOST_PREVENT_MACRO_SUBSTITUTIO
       nextafter(x.backend().value(), y.backend().value()));
 }
 
-}  // namespace multiprecision
-}  // namespace boost
+}  // namespace boost::multiprecision
 
 namespace std {
 
-// The limits of Float<P, E>, as numbers.
+// The limits of Float<P, E>, as numbers. Specializing numeric_limits for a
+// program-defined type is allowed.
 template <int P, int E, boost::multiprecision::expression_template_option ET>
+// NOLINTNEXTLINE(bugprone-std-namespace-modification)
 class numeric_limits<
     boost::multiprecision::number<mpfix::boost_backend<P, E>, ET>> {
   using L = numeric_limits<mpfix::Float<P, E>>;

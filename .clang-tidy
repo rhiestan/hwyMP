@@ -1,0 +1,89 @@
+# clang-tidy checks for mpfix, used by clangd and by the CMake option
+# MPFIX_CLANG_TIDY. The headers are checked through the tests, fuzzers and
+# benchmarks that include them.
+#
+# The groups that find real problems are enabled. The checks disabled below
+# conflict with the library's interface, with Google style, or with deliberate
+# patterns of the code; the reasons follow the list.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape,
+  -bugprone-misplaced-widening-cast,
+  -bugprone-random-generator-seed,
+  clang-analyzer-*,
+  google-*,
+  -google-readability-braces-around-statements,
+  -google-runtime-float,
+  -google-runtime-int,
+  misc-*,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
+  modernize-*,
+  -modernize-avoid-c-arrays,
+  -modernize-return-braced-init-list,
+  -modernize-use-auto,
+  -modernize-use-designated-initializers,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  performance-*,
+  -performance-enum-size,
+  -performance-inefficient-string-concatenation,
+  portability-*,
+  readability-*,
+  -readability-avoid-nested-conditional-operator,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-math-missing-parentheses,
+  -readability-redundant-parentheses,
+  -readability-redundant-typename,
+  -readability-uppercase-literal-suffix,
+  -readability-use-anyofallof,
+  -readability-use-concise-preprocessor-directives,
+  -readability-use-std-min-max
+
+# Why the checks above are disabled:
+#   easily-swappable-parameters: the math functions take several values of
+#     one type, as their standard counterparts do.
+#   exception-escape, random-generator-seed: the mains of the test and
+#     benchmark programs, and their fixed seeds, for reproducible runs.
+#   misplaced-widening-cast: small int sums and products, some of them of
+#     negative terms, converted once the result is known to fit.
+#   google-runtime-int, google-runtime-float: the conversions cover every
+#     built-in type, long double included, and GMP and MPFR take long.
+#   include-cleaner: GoogleTest's and Eigen's umbrella headers.
+#   no-recursion: binary splitting and the recursive big-integer algorithms.
+#   non-private-member-variables-in-classes: plain structs such as Context.
+#   avoid-c-arrays: buffers for to_chars and the tables of the tests.
+#   enum-size: Flag is unsigned to combine into flag words; no enum is stored
+#     in bulk.
+#   inefficient-string-concatenation: messages and inputs of the tests.
+#   redundant-parentheses: (std::numeric_limits<T>::max)() guards against the
+#     min and max macros of windows.h.
+#   redundant-typename: older C++20 compilers still need the typename.
+#   use-std-min-max: the comparisons mix integer types, and float.h does not
+#     include <algorithm>.
+#   (google-)braces-around-statements, const-correctness, use-auto,
+#     return-braced-init-list, use-designated-initializers, use-nodiscard,
+#     use-trailing-return-type, nested-conditional-operator,
+#     function-cognitive-complexity, identifier-length,
+#     implicit-bool-conversion, isolate-declaration, magic-numbers,
+#     math-missing-parentheses, uppercase-literal-suffix, use-anyofallof,
+#     concise-preprocessor-directives: style choices that Google style leaves
+#     open or that the code makes consistently.
+
+CheckOptions:
+  # Flag only literals that are the constant, not bounds just above it.
+  modernize-use-std-numbers.DiffThreshold: '1e-12'
+
+# Only diagnose mpfix's own files, not those of GoogleTest, Eigen, Boost,
+# Highway, GMP or MPFR.
+HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: '([/\\]_deps[/\\]|[/\\]vcpkg_installed[/\\]|[/\\]boost[/\\]|[/\\]hwy[/\\]|[/\\]Eigen[/\\]|[/\\]gtest[/\\]|[/\\]gmock[/\\])'

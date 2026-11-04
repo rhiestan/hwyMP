@@ -815,6 +815,10 @@ bool CheckHexDigits(const F& x, Rounding mode) {
   Context context{mode};
   const auto result = to_chars(buffer, buffer + sizeof(buffer), x,
                                std::chars_format::hex, kDigits, context);
+  if (result.ec != std::errc{}) {
+    ADD_FAILURE() << "to_chars failed for " << Hex(x);
+    return false;
+  }
   Rounded actual;
   from_chars(buffer, result.ptr, actual, std::chars_format::hex);
   const bool ok =

@@ -16,9 +16,11 @@
 #include <mpfr.h>
 
 #include <array>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "mpfix/float.h"
@@ -264,9 +266,10 @@ bool SameResult(const F& x, const F& y) {
   return x.to_bits() == y.to_bits();
 }
 
-int TestScale() {
+inline int TestScale() {
   const char* text = std::getenv("MPFIX_TEST_SCALE");
-  const int scale = text != nullptr ? std::atoi(text) : 1;
+  int scale = 1;
+  if (text != nullptr) std::from_chars(text, text + std::strlen(text), scale);
   return scale > 0 ? scale : 1;
 }
 

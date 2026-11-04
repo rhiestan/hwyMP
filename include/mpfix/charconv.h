@@ -35,6 +35,7 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "mpfix/bigint.h"
@@ -1302,7 +1303,7 @@ inline std::string ExponentSuffix(char marker, std::int64_t exponent,
   std::string text(1, marker);
   text.push_back(exponent < 0 ? '-' : '+');
   std::string magnitude = std::to_string(exponent < 0 ? -exponent : exponent);
-  if (static_cast<int>(magnitude.size()) < min_digits) {
+  if (std::cmp_less(magnitude.size(), min_digits)) {
     magnitude.insert(0, static_cast<std::size_t>(min_digits) - magnitude.size(),
                      '0');
   }
@@ -1437,7 +1438,7 @@ std::string FormatShortest(const Float<P, E>& x, std::chars_format fmt,
       fixed_length = length + 1;
     }
     const std::string scientific = ScientificNotation(decimal);
-    if (static_cast<std::int64_t>(scientific.size()) < fixed_length) {
+    if (std::cmp_less(scientific.size(), fixed_length)) {
       return sign + scientific;
     }
     return fixed();
@@ -1509,7 +1510,7 @@ inline std::to_chars_result CopyOut(char* first, char* last,
   if (static_cast<std::size_t>(last - first) < text.size()) {
     return {last, std::errc::value_too_large};
   }
-  std::memcpy(first, text.data(), text.size());
+  std::ranges::copy(text, first);
   return {first + text.size(), std::errc{}};
 }
 

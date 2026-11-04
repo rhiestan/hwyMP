@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <numbers>
 #include <ostream>
 #include <type_traits>
 
@@ -522,7 +523,7 @@ Complex<F> log10(const Complex<F>& z) {
   const F x = z.real(), y = z.imag();
   if (!x.is_finite() || !y.is_finite() || (x.is_zero() && y.is_zero())) {
     const Complex<F> w = log(z);
-    return {w.real(), w.imag() / F(2.302585092994045684)};
+    return {w.real(), w.imag() / F(std::numbers::ln10)};
   }
   const W inverse = W(1) / log(W(10));
   const F ax = abs(x), ay = abs(y);

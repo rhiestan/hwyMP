@@ -175,11 +175,11 @@ MPFIX_ALWAYS_INLINE constexpr limb_t adc(limb_t a, limb_t b,
                                          carry_t& carry) noexcept {
   if (std::is_constant_evaluated()) return detail::portable::adc(a, b, carry);
 #if MPFIX_ARCH_X64
-  unsigned long long sum;
+  unsigned long long sum = 0;
   carry = _addcarry_u64(carry, a, b, &sum);
   return sum;
 #elif MPFIX_HAS_BUILTIN(__builtin_addcll)
-  unsigned long long carry_out;
+  unsigned long long carry_out = 0;
   const limb_t sum = __builtin_addcll(a, b, carry, &carry_out);
   carry = static_cast<carry_t>(carry_out);
   return sum;
@@ -193,11 +193,11 @@ MPFIX_ALWAYS_INLINE constexpr limb_t sbb(limb_t a, limb_t b,
                                          carry_t& borrow) noexcept {
   if (std::is_constant_evaluated()) return detail::portable::sbb(a, b, borrow);
 #if MPFIX_ARCH_X64
-  unsigned long long difference;
+  unsigned long long difference = 0;
   borrow = _subborrow_u64(borrow, a, b, &difference);
   return difference;
 #elif MPFIX_HAS_BUILTIN(__builtin_subcll)
-  unsigned long long borrow_out;
+  unsigned long long borrow_out = 0;
   const limb_t difference = __builtin_subcll(a, b, borrow, &borrow_out);
   borrow = static_cast<carry_t>(borrow_out);
   return difference;
@@ -211,12 +211,12 @@ MPFIX_ALWAYS_INLINE constexpr limb_t mul_wide(limb_t a, limb_t b,
                                               limb_t& hi) noexcept {
   if (std::is_constant_evaluated()) return detail::portable::mul_wide(a, b, hi);
 #if defined(_MSC_VER) && MPFIX_ARCH_X64
-  unsigned long long high;
+  unsigned long long high = 0;
   const limb_t low = _umul128(a, b, &high);
   hi = high;
   return low;
 #elif MPFIX_ARCH_X64 && defined(__BMI2__)
-  unsigned long long high;
+  unsigned long long high = 0;
   const limb_t low = _mulx_u64(a, b, &high);
   hi = high;
   return low;
@@ -275,7 +275,7 @@ MPFIX_ALWAYS_INLINE constexpr limb_t div_2by1(limb_t hi, limb_t lo, limb_t d,
 #if MPFIX_GNU_ASM && MPFIX_ARCH_X64
   return detail::div_2by1_asm(hi, lo, d, remainder);
 #elif defined(_MSC_VER) && MPFIX_ARCH_X64
-  unsigned long long rem;
+  unsigned long long rem = 0;
   const limb_t quotient = _udiv128(hi, lo, d, &rem);
   remainder = rem;
   return quotient;

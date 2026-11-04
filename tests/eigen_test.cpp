@@ -180,9 +180,9 @@ TYPED_TEST(EigenDecompositions, SingularValues) {
   for (const auto& [rows, cols] : {std::pair{1, 1}, {7, 7}, {10, 6}}) {
     const Matrix<F> a = RandomMatrix<F>(random, rows, cols);
     const auto check = [&](const auto& svd, const char* what) {
-      const Matrix<F> u = svd.matrixU();
-      const Matrix<F> v = svd.matrixV();
-      const Vector<F> s = svd.singularValues();
+      const Matrix<F>& u = svd.matrixU();
+      const Matrix<F>& v = svd.matrixV();
+      const Vector<F>& s = svd.singularValues();
       const int n = std::max(rows, cols);
       ExpectSmall<F>(u * s.asDiagonal() * v.transpose() - a, Norm<F>(a), n,
                      what);
@@ -210,8 +210,8 @@ TYPED_TEST(EigenDecompositions, Eigenvalues) {
     const Matrix<F> symmetric = a + a.transpose();
     const Eigen::SelfAdjointEigenSolver<Matrix<F>> solver(symmetric);
     ASSERT_EQ(solver.info(), Eigen::Success);
-    const Matrix<F> v = solver.eigenvectors();
-    const Vector<F> d = solver.eigenvalues();
+    const Matrix<F>& v = solver.eigenvectors();
+    const Vector<F>& d = solver.eigenvalues();
     ExpectSmall<F>(symmetric * v - v * d.asDiagonal(), Norm<F>(symmetric), n,
                    "SelfAdjointEigenSolver");
     ExpectSmall<F>(v.transpose() * v - Matrix<F>::Identity(n, n), F(1), n,
@@ -220,8 +220,8 @@ TYPED_TEST(EigenDecompositions, Eigenvalues) {
     // The real Schur form of a general matrix: A = U T U^T.
     const Eigen::RealSchur<Matrix<F>> schur(a);
     ASSERT_EQ(schur.info(), Eigen::Success);
-    const Matrix<F> u = schur.matrixU();
-    const Matrix<F> t = schur.matrixT();
+    const Matrix<F>& u = schur.matrixU();
+    const Matrix<F>& t = schur.matrixT();
     ExpectSmall<F>(u * t * u.transpose() - a, Norm<F>(a), n, "RealSchur");
   }
 }
@@ -324,10 +324,10 @@ TYPED_TEST(EigenComplex, Decompositions) {
 
     const Eigen::JacobiSVD<Matrix<C>, Eigen::ComputeThinU | Eigen::ComputeThinV>
         svd(a);
-    const Matrix<C> u = svd.matrixU();
-    const Matrix<C> v = svd.matrixV();
+    const Matrix<C>& u = svd.matrixU();
+    const Matrix<C>& v = svd.matrixV();
     // The singular values are real, and mix with the complex factors.
-    const Vector<F> s = svd.singularValues();
+    const Vector<F>& s = svd.singularValues();
     ExpectSmallComplex<F>(u * s.template cast<C>().asDiagonal() * v.adjoint() - a,
                    ComplexNorm<F>(a), n, "complex JacobiSVD");
     ExpectSmallComplex<F>(u.adjoint() * u - identity, F(1), n, "complex SVD unitary");
@@ -335,21 +335,21 @@ TYPED_TEST(EigenComplex, Decompositions) {
     const Matrix<C> hermitian = a + a.adjoint();
     const Eigen::SelfAdjointEigenSolver<Matrix<C>> self_adjoint(hermitian);
     ASSERT_EQ(self_adjoint.info(), Eigen::Success);
-    const Matrix<C> w = self_adjoint.eigenvectors();
-    const Vector<F> lambda = self_adjoint.eigenvalues();
+    const Matrix<C>& w = self_adjoint.eigenvectors();
+    const Vector<F>& lambda = self_adjoint.eigenvalues();
     ExpectSmallComplex<F>(hermitian * w - w * lambda.template cast<C>().asDiagonal(),
                    ComplexNorm<F>(hermitian), n, "Hermitian eigenvectors");
 
     // The complex Schur form and the eigenvalues of a general matrix.
     const Eigen::ComplexSchur<Matrix<C>> schur(a);
     ASSERT_EQ(schur.info(), Eigen::Success);
-    const Matrix<C> q = schur.matrixU();
-    const Matrix<C> t = schur.matrixT();
+    const Matrix<C>& q = schur.matrixU();
+    const Matrix<C>& t = schur.matrixT();
     ExpectSmallComplex<F>(q * t * q.adjoint() - a, ComplexNorm<F>(a), n, "ComplexSchur");
     const Eigen::ComplexEigenSolver<Matrix<C>> solver(a);
     ASSERT_EQ(solver.info(), Eigen::Success);
-    const Matrix<C> vectors = solver.eigenvectors();
-    const Vector<C> values = solver.eigenvalues();
+    const Matrix<C>& vectors = solver.eigenvectors();
+    const Vector<C>& values = solver.eigenvalues();
     ExpectSmallComplex<F>(a * vectors - vectors * values.asDiagonal(),
                    ComplexNorm<F>(a) * ComplexNorm<F>(vectors), n, "ComplexEigenSolver");
   }

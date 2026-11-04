@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <numbers>
 #include <string>
 #include <type_traits>
 
@@ -182,7 +183,7 @@ F RandomRegular(Random& random, std::int32_t exponent, bool negative) {
 // x^2 = target ln 2, rounded to F, for the thresholds of erf and erfc.
 template <class F>
 F SquareRootOfLog2(double target) {
-  return F(std::sqrt(target * 0.69314718055994531));
+  return F(std::sqrt(target * std::numbers::ln2));
 }
 
 // Arguments where the functions do something interesting: around zero, near

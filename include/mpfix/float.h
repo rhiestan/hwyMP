@@ -75,14 +75,14 @@ struct NearestEnv {
   static constexpr Rounding rounding() noexcept {
     return Rounding::kNearestEven;
   }
-  static constexpr void raise(unsigned) noexcept {}
+  static constexpr void raise(unsigned /*flags*/) noexcept {}
 };
 
 // Rounds in a given mode and discards flags, for tentative rounding steps.
 struct SilentEnv {
   Rounding mode;
   constexpr Rounding rounding() const noexcept { return mode; }
-  static constexpr void raise(unsigned) noexcept {}
+  static constexpr void raise(unsigned /*flags*/) noexcept {}
 };
 
 struct ContextEnv {
@@ -156,6 +156,8 @@ constexpr void ShiftRight(std::array<limb_t, N>& x, int count) noexcept {
       value = x[source];
       if (bits != 0) {
         value >>= bits;
+        // 0 < bits < 64 since count >= 0, which the analyzer cannot see.
+        // NOLINTNEXTLINE(clang-analyzer-core.BitwiseShift)
         if (source + 1 < size) value |= x[source + 1] << (kLimbBits - bits);
       }
     }
@@ -980,7 +982,7 @@ class Float {
   template <class Env>
   static Float FinishTiny(bool negative, std::int32_t exponent, Extended& value,
                           const Env& env) noexcept {
-    constexpr int kTotalBits = static_cast<int>(kLimbs) * kLimbBits;
+    constexpr int kStorageBits = static_cast<int>(kLimbs) * kLimbBits;
 
     // A value just below 2^kEmin is not tiny if rounding it with an unbounded
     // exponent reaches 2^kEmin.
@@ -998,7 +1000,7 @@ class Float {
     bool is_odd = false;
     bool round_bit = false;
     bool sticky = value.rest != 0;
-    if (discard > kTotalBits) {
+    if (discard > kStorageBits) {
       sticky = true;  // The value is nonzero and entirely below the round bit.
     } else {
       InspectLowBits(limbs, static_cast<int>(discard), is_odd, round_bit,
@@ -1012,7 +1014,7 @@ class Float {
     const bool round_up = detail::ShouldRoundUp(env.rounding(), negative,
                                                 is_odd, round_bit, sticky);
 
-    if (discard >= kTotalBits) {
+    if (discard >= kStorageBits) {
       return round_up ? MinSubnormal(negative) : Zero(negative);
     }
 
@@ -1027,16 +1029,16 @@ class Float {
   // Bits already known to be lost are passed in through `sticky`.
   static void InspectLowBits(const Limbs& limbs, int count, bool& is_odd,
                              bool& round_bit, bool& sticky) noexcept {
-    constexpr int kTotalBits = static_cast<int>(kLimbs) * kLimbBits;
+    constexpr int kStorageBits = static_cast<int>(kLimbs) * kLimbBits;
     const auto bit_at = [&limbs](int position) {
       return ((limbs[static_cast<std::size_t>(position) / kLimbBits] >>
                (position % kLimbBits)) &
               1) != 0;
     };
     round_bit = bit_at(count - 1);
-    if (count < kTotalBits) is_odd = bit_at(count);
+    if (count < kStorageBits) is_odd = bit_at(count);
     Limbs below = limbs;
-    detail::ShiftLeft(below, kTotalBits - count);
+    detail::ShiftLeft(below, kStorageBits - count);
     // `below` now starts with the round bit; drop it to keep the rest.
     below[kLimbs - 1] &= ~kTopBit;
     sticky = sticky || !detail::IsZero(below);
@@ -1922,8 +1924,8 @@ class Float {
       return Zero(negative);
     }
 
-    constexpr int kTotalBits = static_cast<int>(kLimbs) * kLimbBits;
-    const int count = kTotalBits - 1 - x.Exponent();
+    constexpr int kStorageBits = static_cast<int>(kLimbs) * kLimbBits;
+    const int count = kStorageBits - 1 - x.Exponent();
     Limbs limbs = x.limbs_;
     bool is_odd = false;
     bool round_bit = false;
@@ -2277,9 +2279,12 @@ class Float {
         env.raise(kFlagInvalid);
         return saturated;
       }
-      // An integer below 2^64 lies entirely in the top limb.
+      // An integer below 2^64 lies entirely in the top limb. A nonzero
+      // integer has an exponent of at least 0, so the shift is below 64.
+      // NOLINTBEGIN(clang-analyzer-core.BitwiseShift)
       magnitude =
           rounded.limbs_[kLimbs - 1] >> (kLimbBits - 1 - rounded.Exponent());
+      // NOLINTEND(clang-analyzer-core.BitwiseShift)
       const limb_t limit =
           static_cast<limb_t>((Limits::max)()) + (negative ? 1 : 0);
       if ((negative && !Limits::is_signed) || magnitude > limit) {
@@ -2423,7 +2428,9 @@ I to_integer_exact(const Float<P, E>& x, Rounding mode,
 // constexpr, since Float's operations are not.
 namespace std {
 
+// Specializing numeric_limits for a program-defined type is allowed.
 template <int P, int E>
+// NOLINTNEXTLINE(bugprone-std-namespace-modification)
 class numeric_limits<mpfix::Float<P, E>> {
   using F = mpfix::Float<P, E>;
 

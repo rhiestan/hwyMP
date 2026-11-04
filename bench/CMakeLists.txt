@@ -13,6 +13,7 @@ find_library(MPFIX_GMP_LIBRARY NAMES gmp libgmp REQUIRED)
 find_library(MPFIX_MPFR_LIBRARY NAMES mpfr libmpfr REQUIRED)
 
 add_executable(bench_scalar bench_scalar.cpp)
+mpfix_warnings(bench_scalar)
 target_link_libraries(bench_scalar PRIVATE mpfix
   "${MPFIX_MPFR_LIBRARY}" "${MPFIX_GMP_LIBRARY}")
 target_include_directories(bench_scalar SYSTEM PRIVATE
@@ -41,6 +42,7 @@ target_compile_options(bench_scalar PRIVATE
   $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)
 
 add_executable(bench_strings bench_strings.cpp)
+mpfix_warnings(bench_strings)
 target_link_libraries(bench_strings PRIVATE mpfix
   "${MPFIX_MPFR_LIBRARY}" "${MPFIX_GMP_LIBRARY}")
 target_include_directories(bench_strings SYSTEM PRIVATE
@@ -49,6 +51,7 @@ target_compile_options(bench_strings PRIVATE
   $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)
 
 add_executable(bench_math bench_math.cpp)
+mpfix_warnings(bench_math)
 target_link_libraries(bench_math PRIVATE mpfix
   "${MPFIX_MPFR_LIBRARY}" "${MPFIX_GMP_LIBRARY}")
 target_include_directories(bench_math SYSTEM PRIVATE
@@ -69,6 +72,7 @@ set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(highway)
 
 add_executable(bench_batch bench_batch.cpp)
+mpfix_warnings(bench_batch)
 target_link_libraries(bench_batch PRIVATE mpfix hwy)
 target_compile_options(bench_batch PRIVATE
   $<$<CXX_COMPILER_ID:Clang,GNU,AppleClang>:-march=native>)

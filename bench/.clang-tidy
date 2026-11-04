@@ -1,0 +1,7 @@
+# The benchmarks run Boost.Multiprecision, whose cpp_int code trips these
+# analyzer checks. The tests analyze mpfix's headers with them.
+InheritParentConfig: true
+Checks: >
+  -clang-analyzer-core.BitwiseShift,
+  -clang-analyzer-cplusplus.NewDeleteLeaks,
+  -clang-analyzer-security.ArrayBound

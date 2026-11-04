@@ -210,9 +210,9 @@ bool FloatOperation(Checker& check, std::string_view op,
     const auto order = signaling ? compare_signaling(a(), b(), context)
                                  : compare_quiet(a(), b(), context);
     bool result;
-    if (op.substr(0, 2) == "eq") {
+    if (op.starts_with("eq")) {
       result = order == 0;
-    } else if (op.substr(0, 2) == "le") {
+    } else if (op.starts_with("le")) {
       result = order <= 0;
     } else {
       result = order < 0;
@@ -249,7 +249,7 @@ bool CheckLine(Checker& check, const std::vector<std::string_view>& f) {
   const auto underscore = name.find('_');
   const std::string_view from = name.substr(0, underscore);
   const std::string_view rest = name.substr(underscore + 1);
-  if (rest.substr(0, 3) == "to_") {
+  if (rest.starts_with("to_")) {
     const std::string_view to = rest.substr(3);
     bool known = false;
     // Float to float.
@@ -336,6 +336,7 @@ int main(int argc, char** argv) {
                             " -tininessafter " + mode.option +
                             (exact ? " -exact " : " -notexact ") +
                             function.name;
+      // NOLINTNEXTLINE(bugprone-command-processor): runs testfloat_gen.
       std::FILE* pipe = popen(command.c_str(), "r");
       if (pipe == nullptr) {
         std::fprintf(stderr, "cannot run %s\n", command.c_str());

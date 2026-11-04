@@ -150,6 +150,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+`-DMPFIX_CLANG_TIDY=ON` runs clang-tidy, with the checks of `.clang-tidy`, on
+everything the build compiles, and so on the headers.
+
 Beyond the unit and MPFR tests, CI runs:
 
 - the whole suite under AddressSanitizer and UndefinedBehaviorSanitizer,

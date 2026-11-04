@@ -168,7 +168,9 @@ TEST(Boost, Conversions) {
   EXPECT_TRUE(Same(Num(wide), third.backend().value()));
   // To Boost's own types, through its generic conversion.
   const mp::cpp_bin_float_quad quad(third);
+#ifndef __clang_analyzer__  // Boost's own division trips the analyzer.
   EXPECT_EQ(quad, mp::cpp_bin_float_quad(1) / 3);
+#endif
 }
 
 TEST(Boost, StringsAndStreams) {

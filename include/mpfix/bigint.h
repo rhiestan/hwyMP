@@ -482,7 +482,7 @@ class BigUint {
   }
 
   // Adds x[0 .. n) into r, propagating the carry up to r_end.
-  static void AddInto(limb_t* r, limb_t* r_end, const limb_t* x,
+  static void AddInto(limb_t* r, const limb_t* r_end, const limb_t* x,
                       std::size_t n) {
     carry_t carry = 0;
     std::size_t i = 0;

@@ -297,7 +297,7 @@ inline const PiFixedPoint& PiBase() {
 inline std::shared_ptr<const PiFixedPoint> PiAtLeast(std::size_t bits) {
   static std::mutex mutex;
   static std::shared_ptr<const PiFixedPoint> large;
-  const std::lock_guard<std::mutex> lock(mutex);
+  const std::scoped_lock lock(mutex);
   if (!large || large->bits < bits) {
     std::size_t step = 1;
     while (step * 16 <= bits) step *= 2;

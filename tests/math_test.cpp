@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <numbers>
 #include <string>
 
 namespace mpfix {
@@ -196,7 +197,7 @@ TEST(Math, Trigonometric) {
 
   for (const double x : {-1e22, -1e6, -30.0, -2.0, -0.5, -1e-3, 1e-20, 0.25,
                          0.75, 0.785, 0.786, 1.0, 1.5707963267948966, 3.0,
-                         3.141592653589793, 5.0, 100.0, 1e10, 1e300}) {
+                         std::numbers::pi, 5.0, 100.0, 1e10, 1e300}) {
     EXPECT_NEAR(static_cast<double>(sin(F(x))), std::sin(x), 1e-15) << x;
     EXPECT_NEAR(static_cast<double>(cos(F(x))), std::cos(x), 1e-15) << x;
     const double t = std::tan(x);
@@ -286,7 +287,7 @@ TEST(Math, C23ExponentialsAndLogarithms) {
   for (const double x : {-30.0, -2.5, -0.3, -1e-5, 1e-20, 0.25, 0.75, 5.5}) {
     EXPECT_NEAR(static_cast<double>(exp10(F(x))), std::pow(10.0, x),
                 std::pow(10.0, x) * 1e-15);
-    const double expected = std::expm1(x * 0.6931471805599453);
+    const double expected = std::expm1(x * std::numbers::ln2);
     EXPECT_NEAR(static_cast<double>(exp2m1(F(x))), expected,
                 std::abs(expected) * 1e-14);
     if (x > -1) {

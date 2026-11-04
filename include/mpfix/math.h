@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -166,8 +167,8 @@ const MathConstants<W>& GetMathConstants() {
 template <class W>
 W MulSmall(const W& x, limb_t m) {
   if (x.is_zero() || m == 1) return x;
-  constexpr std::size_t kCount = W::kLimbs + 1;
-  std::array<limb_t, kCount> limbs;
+  constexpr std::size_t kWorkLimbs = W::kLimbs + 1;
+  std::array<limb_t, kWorkLimbs> limbs;
   limb_t carry = 0;
   for (std::size_t i = 0; i < W::kLimbs; ++i) {
     limb_t high;
@@ -176,40 +177,40 @@ W MulSmall(const W& x, limb_t m) {
     limbs[i] = adc(low, carry, c);
     carry = high + c;
   }
-  limbs[kCount - 1] = carry;
-  // x * m < 2^(64 kCount), and its top limb is nonzero for m > 1.
+  limbs[kWorkLimbs - 1] = carry;
+  // x * m < 2^(64 kWorkLimbs), and its top limb is nonzero for m > 1.
   const int shift = countl_zero(carry);
   if (shift != 0) {
-    for (std::size_t i = kCount; i-- > 1;) {
+    for (std::size_t i = kWorkLimbs; i-- > 1;) {
       limbs[i] = (limbs[i] << shift) | (limbs[i - 1] >> (kLimbBits - shift));
     }
     limbs[0] <<= shift;
   }
   return FloatAccess::Round<W>(x.signbit(),
                                std::int64_t{x.raw_exponent()} + kLimbBits - shift,
-                               limbs.data(), kCount, false, NearestEnv{});
+                               limbs.data(), kWorkLimbs, false, NearestEnv{});
 }
 
 // x / m, rounded to nearest, for 0 < m < 2^63. Takes linear time.
 template <class W>
 W DivSmall(const W& x, limb_t m) {
   if (x.is_zero() || m == 1) return x;
-  constexpr std::size_t kCount = W::kLimbs + 1;
-  std::array<limb_t, kCount> limbs;
+  constexpr std::size_t kWorkLimbs = W::kLimbs + 1;
+  std::array<limb_t, kWorkLimbs> limbs;
   limbs[0] = 0;
   for (std::size_t i = 0; i < W::kLimbs; ++i) limbs[i + 1] = x.raw_limbs()[i];
-  const bool sticky = DivideLimbs(limbs.data(), kCount, m) != 0;
-  // The quotient is at least 2^(64 kCount - 1) / m >= 2^(64 kCount - 64).
-  const int shift = countl_zero(limbs[kCount - 1]);
+  const bool sticky = DivideLimbs(limbs.data(), kWorkLimbs, m) != 0;
+  // The quotient is at least 2^(64 kWorkLimbs - 1) / m >= 2^(64 kWorkLimbs - 64).
+  const int shift = countl_zero(limbs[kWorkLimbs - 1]);
   if (shift != 0) {
-    for (std::size_t i = kCount; i-- > 1;) {
+    for (std::size_t i = kWorkLimbs; i-- > 1;) {
       limbs[i] = (limbs[i] << shift) | (limbs[i - 1] >> (kLimbBits - shift));
     }
     limbs[0] <<= shift;
   }
   return FloatAccess::Round<W>(x.signbit(),
                                std::int64_t{x.raw_exponent()} - shift,
-                               limbs.data(), kCount, sticky, NearestEnv{});
+                               limbs.data(), kWorkLimbs, sticky, NearestEnv{});
 }
 
 // Fixed-point numbers v 2^(64 kN) in kN + 1 limbs, least significant first,
@@ -224,13 +225,13 @@ using FixedLimbs = std::array<limb_t, kN + 1>;
 // is below 2^(64 (kN - 1)), and there are fewer than 2^64 of them.
 template <std::size_t kN>
 FixedLimbs<kN> FixedMul(const FixedLimbs<kN>& a, const FixedLimbs<kN>& b) {
-  constexpr std::size_t kCount = kN + 1;
+  constexpr std::size_t kWorkLimbs = kN + 1;
   constexpr std::size_t kFirstColumn = kN >= 2 ? kN - 2 : 0;
-  std::array<limb_t, 2 * kCount> full{};
-  for (std::size_t i = 0; i < kCount; ++i) {
+  std::array<limb_t, 2 * kWorkLimbs> full{};
+  for (std::size_t i = 0; i < kWorkLimbs; ++i) {
     if (a[i] == 0) continue;
     limb_t carry = 0;
-    for (std::size_t j = kFirstColumn > i ? kFirstColumn - i : 0; j < kCount;
+    for (std::size_t j = kFirstColumn > i ? kFirstColumn - i : 0; j < kWorkLimbs;
          ++j) {
       limb_t hi;
       limb_t lo = mul_wide(a[i], b[j], hi);
@@ -242,10 +243,10 @@ FixedLimbs<kN> FixedMul(const FixedLimbs<kN>& a, const FixedLimbs<kN>& b) {
       full[i + j] = lo;
       carry = hi + c;
     }
-    full[i + kCount] = carry;
+    full[i + kWorkLimbs] = carry;
   }
   FixedLimbs<kN> result;
-  for (std::size_t i = 0; i < kCount; ++i) result[i] = full[i + kN];
+  for (std::size_t i = 0; i < kWorkLimbs; ++i) result[i] = full[i + kN];
   return result;
 }
 
@@ -672,12 +673,12 @@ bool RoundClearOfBoundaries(const W& y, int bits, const Env& env, F& result) {
   constexpr int kTotal = static_cast<int>(W::kLimbs) * kLimbBits;
   // The bits below the first P + 1, and the error in units of the lowest
   // limb bit, below 2^slack.
-  constexpr int kBelow = kTotal - (F::kPrecision + 1);
+  constexpr int kTailBits = kTotal - (F::kPrecision + 1);
   const int slack = kTotal - bits;
-  if (slack + 1 >= kBelow) return false;
+  if (slack + 1 >= kTailBits) return false;
   const auto& limbs = y.raw_limbs();
-  if (BitsAllEqual(limbs, slack, kBelow, false) ||
-      BitsAllEqual(limbs, slack, kBelow, true)) {
+  if (BitsAllEqual(limbs, slack, kTailBits, false) ||
+      BitsAllEqual(limbs, slack, kTailBits, true)) {
     return false;
   }
   result = FloatAccess::Round<F>(y.signbit(), y.raw_exponent(), limbs.data(),
@@ -1598,9 +1599,9 @@ struct TrigTables {
       for (int i = 0; i < count; ++i) {
         Wide s;
         Wide c;
-        double s_units;
-        double c_units;
-        SinCosByHalving(scalbn(Wide(i), -shift), s, c, s_units, c_units);
+        double sin_units;
+        double cos_units;
+        SinCosByHalving(scalbn(Wide(i), -shift), s, c, sin_units, cos_units);
         sin_out[i] = FloatAccess::Convert<W>(s, NearestEnv{});
         cos_out[i] = FloatAccess::Convert<W>(Wide(1) + c, NearestEnv{});
       }
@@ -1701,19 +1702,19 @@ F TrigEvaluate(const F& x, const Env& env) {
     }
     W s;
     W cos_r;
-    double s_units;
-    double c_units;
-    SinCosReduced<W, std::is_same_v<W, Wide1<F>>>(r, s, cos_r, s_units,
-                                                  c_units);
+    double sin_units;
+    double cos_units;
+    SinCosReduced<W, std::is_same_v<W, Wide1<F>>>(r, s, cos_r, sin_units,
+                                                  cos_units);
     // A relative error e of r makes at most e in sin r and 0.8 e in cos r
     // for |r| <= pi/4.
-    s_units += reduction_units;
-    c_units += reduction_units;
+    sin_units += reduction_units;
+    cos_units += reduction_units;
     W y;
     double units;
     if constexpr (kKind == Trig::kTan) {
       // tan x = tan r, or -1 / tan r in odd quadrants.
-      units = s_units + c_units + 1;
+      units = sin_units + cos_units + 1;
       y = (quadrant & 1) == 0 ? s / cos_r : -(cos_r / s);
       if (negative) y = -y;
     } else {
@@ -1723,7 +1724,7 @@ F TrigEvaluate(const F& x, const Env& env) {
       const int k = kOdd ? quadrant : quadrant + 1;
       const bool use_cos = (k & 1) != 0;
       y = use_cos ? cos_r : s;
-      units = use_cos ? c_units : s_units;
+      units = use_cos ? cos_units : sin_units;
       if ((k & 2) != 0) y = -y;
       if constexpr (kOdd) {
         if (negative) y = -y;
@@ -2485,14 +2486,14 @@ Tracked<W> SinPiMagnitude(const W& x, bool& negative) {
   const W pi = GetSpecialConstants<W>().pi.value;
   W s;
   W c;
-  double s_units;
-  double c_units;
+  double sin_units;
+  double cos_units;
   if (a <= W(0.25)) {
-    SinCosReduced<W, kUseTables>(pi * a, s, c, s_units, c_units);
-    return {s, s_units + 2};
+    SinCosReduced<W, kUseTables>(pi * a, s, c, sin_units, cos_units);
+    return {s, sin_units + 2};
   }
-  SinCosReduced<W, kUseTables>(pi * (half - a), s, c, s_units, c_units);
-  return {c, c_units + 2};
+  SinCosReduced<W, kUseTables>(pi * (half - a), s, c, sin_units, cos_units);
+  return {c, cos_units + 2};
 }
 
 // log |Gamma(x)| for an exact non-integer x, or x > 0.
@@ -2569,7 +2570,7 @@ Tracked<W> GammaPositive(const Tracked<W>& x) {
 template <class F>
 double GammaOverflowThreshold() {
   static const double threshold = [] {
-    const double target = (F::kEmax + 1.0) * 0.69314718055994531;
+    const double target = (F::kEmax + 1.0) * std::numbers::ln2;
     double low = 1;
     double high = 2;
     while (std::lgamma(high) < target) high *= 2;
@@ -2632,7 +2633,7 @@ F TgammaImpl(const F& x, const Env& env) {
   if (x.signbit()) {
     const double log2_bound =
         F::kPrecision + 2 - x.raw_exponent() -
-        std::lgamma(1 - static_cast<double>(x)) * 1.4426950408889634;
+        std::lgamma(1 - static_cast<double>(x)) * std::numbers::log2e;
     if (log2_bound < F::kEmin - F::kPrecision - 8) {
       // The sign of Gamma(x) is that of sin(pi x): negative for an odd
       // floor(x).
@@ -3211,8 +3212,11 @@ F PowImpl(const F& x, const F& y, const Env& env) {
     int units_exp;
     const W q = ExpM1Reduced<W, kFirst>(r, units_exp);
     const W value = scalbn(q + W(1), static_cast<int>(k));
+    // |t| < 2^26, so the shift is at most 26.
+    // NOLINTBEGIN(clang-analyzer-core.BitwiseShift)
     const std::int64_t size =
         t.raw_exponent() >= 0 ? std::int64_t{2} << t.raw_exponent() : 1;
+    // NOLINTEND(clang-analyzer-core.BitwiseShift)
     const std::int64_t units = units_exp + 4 + size * (units_log + 2);
     return RoundTranscendental(negative ? -value : value,
                                W::kPrecision - LostBitsWide(units), last, env,

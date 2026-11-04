@@ -498,18 +498,18 @@ void CheckTrigBounds(int iterations, limb_t seed) {
     const W kernel_r = abs(a) >= W(0.78) ? scalbn(a, -1) : a;
     W s;
     W c;
-    double s_units;
-    double c_units;
+    double sin_units;
+    double cos_units;
     const View<W> r_view(kernel_r);
-    detail::SinCosByHalving(kernel_r, s, c, s_units, c_units);
+    detail::SinCosByHalving(kernel_r, s, c, sin_units, cos_units);
     mpfr_sin(exact.get(), r_view.get(), MPFR_RNDN);
-    check("sin by halving", s, s_units, "r=" + Hex(kernel_r));
+    check("sin by halving", s, sin_units, "r=" + Hex(kernel_r));
     // cos r - 1 = -2 sin^2(r/2), without cancellation.
     mpfr_div_2ui(exact.get(), r_view.get(), 1, MPFR_RNDN);
     mpfr_sin(exact.get(), exact.get(), MPFR_RNDN);
     mpfr_sqr(exact.get(), exact.get(), MPFR_RNDN);
     mpfr_mul_si(exact.get(), exact.get(), -2, MPFR_RNDN);
-    check("cos - 1 by halving", c, c_units, "r=" + Hex(kernel_r));
+    check("cos - 1 by halving", c, cos_units, "r=" + Hex(kernel_r));
 
     // The tables of the first format, often next to their points.
     if constexpr (std::is_same_v<W, detail::MathWorking<F, 1>>) {
@@ -522,11 +522,11 @@ void CheckTrigBounds(int iterations, limb_t seed) {
         if (abs(t) >= W(0.8) || t.is_zero()) t = kernel_r;
       }
       const View<W> t_view(t);
-      detail::SinCosReduced<W, true>(t, s, c, s_units, c_units);
+      detail::SinCosReduced<W, true>(t, s, c, sin_units, cos_units);
       mpfr_sin(exact.get(), t_view.get(), MPFR_RNDN);
-      check("sin with tables", s, s_units, "r=" + Hex(t));
+      check("sin with tables", s, sin_units, "r=" + Hex(t));
       mpfr_cos(exact.get(), t_view.get(), MPFR_RNDN);
-      check("cos with tables", c, c_units, "r=" + Hex(t));
+      check("cos with tables", c, cos_units, "r=" + Hex(t));
     }
   }
 }

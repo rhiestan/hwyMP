@@ -67,7 +67,8 @@ void CheckParse(std::string_view text, Rounding mode) {
                                     value, std::chars_format::general,
                                     context);
   if (ec != std::errc{}) return;
-  const std::string parsed(text.data(), end);
+  const std::string parsed(
+      text.substr(0, static_cast<std::size_t>(end - text.data())));
   if (!IsPlainDecimal(parsed)) return;
   const Expected<F> expected = RoundExact<F>(
       [&](mpfr_ptr result, mpfr_rnd_t rnd) {

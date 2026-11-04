@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -37,9 +38,9 @@ using Vec = hn::Vec<D>;
 constexpr int kLimbs = 9;
 constexpr int kRadixBits = 28;
 constexpr std::uint64_t kMask = (std::uint64_t{1} << kRadixBits) - 1;
-constexpr int kTotalBits = kLimbs * kRadixBits;           // 252
-constexpr int kSpareBits = kTotalBits - F::kPrecision;    // 15
-constexpr int kCount = 1024;
+constexpr int kRadixTotalBits = kLimbs * kRadixBits;           // 252
+constexpr int kSpareBits = kRadixTotalBits - F::kPrecision;    // 15
+constexpr int kBatchSize = 1024;
 constexpr int kExponentSpread = 8;
 
 std::uint64_t Mix(std::uint64_t& state) {
@@ -53,8 +54,8 @@ std::uint64_t Mix(std::uint64_t& state) {
 std::vector<F> MakeValues(std::uint64_t seed) {
   std::uint64_t state = seed;
   std::vector<F> values;
-  values.reserve(kCount);
-  for (int i = 0; i < kCount; ++i) {
+  values.reserve(kBatchSize);
+  for (int i = 0; i < kBatchSize; ++i) {
     F::Limbs limbs;
     for (auto& limb : limbs) limb = Mix(state);
     limbs[0] &= ~((std::uint64_t{1} << 19) - 1);
@@ -84,15 +85,18 @@ struct Soa {
   std::uint64_t* negative;  // All ones when negative.
 
   Soa() {
-    storage = hwy::AllocateAligned<std::uint64_t>((kLimbs + 2) * kCount);
-    for (int i = 0; i < kLimbs; ++i) limbs[i] = storage.get() + i * kCount;
-    exponent = storage.get() + kLimbs * kCount;
-    negative = storage.get() + (kLimbs + 1) * kCount;
+    storage = hwy::AllocateAligned<std::uint64_t>(
+        std::size_t{kLimbs + 2} * kBatchSize);
+    for (int i = 0; i < kLimbs; ++i) {
+      limbs[i] = storage.get() + std::ptrdiff_t{i} * kBatchSize;
+    }
+    exponent = storage.get() + std::ptrdiff_t{kLimbs} * kBatchSize;
+    negative = storage.get() + std::ptrdiff_t{kLimbs + 1} * kBatchSize;
   }
 
   void Set(int index, const F& x) {
     for (int i = 0; i < kLimbs; ++i) {
-      limbs[i][index] = ReadBits(x.raw_limbs(), 256 - kTotalBits + i * kRadixBits,
+      limbs[i][index] = ReadBits(x.raw_limbs(), 256 - kRadixTotalBits + i * kRadixBits,
                                  kRadixBits);
     }
     exponent[index] = static_cast<std::uint64_t>(std::int64_t{x.raw_exponent()});
@@ -102,7 +106,7 @@ struct Soa {
   F Get(int index) const {
     F::Limbs result{};
     for (int i = 0; i < kLimbs; ++i) {
-      const int position = 256 - kTotalBits + i * kRadixBits;
+      const int position = 256 - kRadixTotalBits + i * kRadixBits;
       const int word = position / 64;
       const int offset = position % 64;
       result[word] |= limbs[i][index] << offset;
@@ -164,7 +168,7 @@ HWY_NOINLINE void MulBatch(const Soa& a, const Soa& b, Soa& out) {
   const size_t lanes = hn::Lanes(d);
   const Vec mask = hn::Set(d, kMask);
 
-  for (int index = 0; index + static_cast<int>(lanes) <= kCount;
+  for (int index = 0; index + static_cast<int>(lanes) <= kBatchSize;
        index += static_cast<int>(lanes)) {
     hn::Vec<decltype(d32)> va[kLimbs];
     hn::Vec<decltype(d32)> vb[kLimbs];
@@ -174,7 +178,7 @@ HWY_NOINLINE void MulBatch(const Soa& a, const Soa& b, Soa& out) {
     }
 
     Vec column[2 * kLimbs - 1];
-    for (int i = 0; i < 2 * kLimbs - 1; ++i) column[i] = hn::Zero(d);
+    for (Vec& sum : column) sum = hn::Zero(d);
     for (int i = 0; i < kLimbs; ++i) {
       for (int j = 0; j < kLimbs; ++j) {
         column[i + j] = hn::Add(column[i + j], hn::MulEven(va[i], vb[j]));
@@ -222,7 +226,9 @@ HWY_INLINE void ShiftWords(Vec* HWY_RESTRICT ext, hn::Mask<D> active,
                            Vec& sticky) {
   const D d;
   Vec lost = hn::Zero(d);
-  for (int i = 0; i < kAmount && i < kSize; ++i) lost = hn::Or(lost, ext[i]);
+  for (int i = 0; i < std::min(kAmount, kSize); ++i) {
+    lost = hn::Or(lost, ext[i]);
+  }
   sticky = hn::Or(sticky, hn::IfThenElseZero(active, lost));
   for (int i = 0; i < kSize; ++i) {
     const Vec moved = i + kAmount < kSize ? ext[i + kAmount] : hn::Zero(d);
@@ -249,7 +255,7 @@ HWY_NOINLINE void AddBatch(const Soa& a, const Soa& b, Soa& out) {
   constexpr int kExtra = 2;
   constexpr int kSize = kLimbs + kExtra;
 
-  for (int index = 0; index + lanes <= kCount; index += lanes) {
+  for (int index = 0; index + lanes <= kBatchSize; index += lanes) {
     Vec big[kLimbs];
     Vec small[kLimbs];
     const Vec exp_a = hn::Load(d, a.exponent + index);
@@ -287,7 +293,7 @@ HWY_NOINLINE void AddBatch(const Soa& a, const Soa& b, Soa& out) {
     ext[1] = hn::Zero(d);
     for (int i = 0; i < kLimbs; ++i) ext[i + kExtra] = small[i];
     Vec sticky = hn::Zero(d);
-    const Vec limit = hn::Set(d, 15 * kRadixBits);
+    const Vec limit = hn::Set(d, std::uint64_t{15} * kRadixBits);
     const Vec clamped = hn::Min(distance, limit);
     // Division by 28: the quotient only needs to be right below 16 * 28.
     const Vec words = hn::ShiftRight<32>(
@@ -349,13 +355,13 @@ HWY_NOINLINE void AddBatch(const Soa& a, const Soa& b, Soa& out) {
     };
     if (HWY_UNLIKELY(!hn::AllFalse(d, zero_top(1)))) {
       auto active = zero_top(8);
-      moved = hn::IfThenElseZero(active, hn::Set(d, 8 * kRadixBits));
+      moved = hn::IfThenElseZero(active, hn::Set(d, std::uint64_t{8} * kRadixBits));
       ShiftWordsUp<8, kSize>(result, active);
       active = zero_top(4);
-      moved = hn::Add(moved, hn::IfThenElseZero(active, hn::Set(d, 4 * kRadixBits)));
+      moved = hn::Add(moved, hn::IfThenElseZero(active, hn::Set(d, std::uint64_t{4} * kRadixBits)));
       ShiftWordsUp<4, kSize>(result, active);
       active = zero_top(2);
-      moved = hn::Add(moved, hn::IfThenElseZero(active, hn::Set(d, 2 * kRadixBits)));
+      moved = hn::Add(moved, hn::IfThenElseZero(active, hn::Set(d, std::uint64_t{2} * kRadixBits)));
       ShiftWordsUp<2, kSize>(result, active);
       active = zero_top(1);
       moved = hn::Add(moved, hn::IfThenElseZero(active, hn::Set(d, kRadixBits)));
@@ -396,13 +402,13 @@ double BestNanoseconds(Pass pass, int operations) {
     const auto start = Clock::now();
     for (int i = 0; i < repeats; ++i) pass();
     const std::chrono::duration<double, std::nano> elapsed = Clock::now() - start;
-    best = std::min(best, elapsed.count() / (double(repeats) * operations));
+    best = std::min(best, elapsed.count() / (static_cast<double>(repeats) * operations));
   }
   return best;
 }
 
 int Verify(const char* name, const Soa& out, const std::vector<F>& expected) {
-  const int count = kCount - kCount % static_cast<int>(hn::Lanes(D()));
+  const int count = kBatchSize - kBatchSize % static_cast<int>(hn::Lanes(D()));
   int mismatches = 0;
   for (int i = 0; i < count; ++i) {
     if (expected[i].is_zero()) continue;  // The prototype skips exact zeros.
@@ -411,8 +417,10 @@ int Verify(const char* name, const Soa& out, const std::vector<F>& expected) {
         const F::Bits got = out.Get(i).to_bits();
         const F::Bits want = expected[i].to_bits();
         std::printf("%s mismatch at %d: got %016llx %016llx want %016llx %016llx\n",
-                    name, i, (unsigned long long)got[3], (unsigned long long)got[0],
-                    (unsigned long long)want[3], (unsigned long long)want[0]);
+                    name, i, static_cast<unsigned long long>(got[3]),
+                    static_cast<unsigned long long>(got[0]),
+                    static_cast<unsigned long long>(want[3]),
+                    static_cast<unsigned long long>(want[0]));
       }
     }
   }
@@ -431,8 +439,8 @@ int main() {
   Soa a;
   Soa b;
   Soa out;
-  std::vector<F> scalar(kCount);
-  for (int i = 0; i < kCount; ++i) {
+  std::vector<F> scalar(kBatchSize);
+  for (int i = 0; i < kBatchSize; ++i) {
     a.Set(i, a_values[i]);
     b.Set(i, b_values[i]);
   }
@@ -442,32 +450,32 @@ int main() {
 
   const double scalar_mul = BestNanoseconds(
       [&] {
-        for (int i = 0; i < kCount; ++i) scalar[i] = a_values[i] * b_values[i];
-        sink = scalar[kCount / 2].raw_limbs()[0];
+        for (int i = 0; i < kBatchSize; ++i) scalar[i] = a_values[i] * b_values[i];
+        sink = scalar[kBatchSize / 2].raw_limbs()[0];
       },
-      kCount);
+      kBatchSize);
   const std::vector<F> expected_mul = scalar;
   const double batch_mul = BestNanoseconds(
       [&] {
         MulBatch(a, b, out);
-        sink = out.limbs[0][kCount / 2];
+        sink = out.limbs[0][kBatchSize / 2];
       },
-      kCount);
+      kBatchSize);
   const int mul_errors = Verify("mul", out, expected_mul);
 
   const double scalar_add = BestNanoseconds(
       [&] {
-        for (int i = 0; i < kCount; ++i) scalar[i] = a_values[i] + b_values[i];
-        sink = scalar[kCount / 2].raw_limbs()[0];
+        for (int i = 0; i < kBatchSize; ++i) scalar[i] = a_values[i] + b_values[i];
+        sink = scalar[kBatchSize / 2].raw_limbs()[0];
       },
-      kCount);
+      kBatchSize);
   const std::vector<F> expected_add = scalar;
   const double batch_add = BestNanoseconds(
       [&] {
         AddBatch(a, b, out);
-        sink = out.limbs[0][kCount / 2];
+        sink = out.limbs[0][kBatchSize / 2];
       },
-      kCount);
+      kBatchSize);
   const int add_errors = Verify("add", out, expected_add);
 
   // The cost of moving between Float storage and the SoA layout, per number,
@@ -475,10 +483,10 @@ int main() {
   // the two inputs and the output.
   const double convert = BestNanoseconds(
       [&] {
-        for (int i = 0; i < kCount; ++i) out.Set(i, a_values[i]);
-        sink = out.limbs[0][kCount / 2];
+        for (int i = 0; i < kBatchSize; ++i) out.Set(i, a_values[i]);
+        sink = out.limbs[0][kBatchSize / 2];
       },
-      kCount);
+      kBatchSize);
 
   std::printf("%-6s %10s %10s %8s %8s\n", "op", "scalar", "batch", "speedup",
               "errors");

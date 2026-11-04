@@ -383,7 +383,7 @@ F RandomRawArgument(Function f, Random& random) {
       // exact or tied.
       const auto span = static_cast<limb_t>(4 * F::kPrecision);
       return scalbn(F(static_cast<double>(random.Below(span)) -
-                      static_cast<double>(span / 2)),
+                      static_cast<double>(span) / 2),
                     -static_cast<int>(random.Below(2)));
     }
     default: {
