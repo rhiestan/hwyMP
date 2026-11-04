@@ -32,9 +32,9 @@ IEEE" the same ones; Boost has no subnormals or flags.
 
 | | binary128 | binary256 | binary512 |
 |---|---|---|---|
-| add, mul, div, fma over MPFR IEEE | 1.4x to 1.8x | 1.3x to 2.6x | 1.0x to 1.4x |
+| add, mul, div, fma over MPFR IEEE | 1.4x to 2.8x | 1.3x to 2.6x | 1.0x to 1.4x |
 | add, mul, div over SoftFloat | 1.6x, 1.7x, 1.2x | | |
-| sqrt, fma over SoftFloat | 1.1x, 0.86x | | |
+| sqrt, fma over SoftFloat | 1.1x, 1.6x | | |
 | sqrt over MPFR IEEE | 0.95x | 1.7x | 1.5x |
 | add and mul over Boost | 4.5x, 6.5x | 3.8x, 5.1x | 3.8x, 3.5x |
 | div and sqrt over Boost | 12x, 14x | 14x, 8.6x | 13x, 7.8x |
@@ -47,39 +47,43 @@ IEEE" the same ones; Boost has no subnormals or flags.
 | exp and log over Boost | 12x, 16x | 26x, 24x | 46x, 28x |
 
 The exceptions are binary128 square root, where MPFR IEEE is 5% faster and
-native MPFR 1.5 times; binary128 fma, where SoftFloat is 1.16 times faster;
-native MPFR's binary512 fma and dot step; and printing at binary512. MSVC builds of mpfix are 1.2 to 3 times slower than Clang's.
+native MPFR 1.5 times; native MPFR's binary128 and binary512 dot step; and
+printing at binary512. MSVC builds of mpfix are 1.2 to 3 times slower than
+Clang's.
 
 ## Scalar
 
 | Format | Library | add | mul | div | sqrt | fma | dot step |
 |---|---|---:|---:|---:|---:|---:|---:|
-| binary128 | mpfix | 8.20 | 7.53 | 14.93 | 20.49 | 24.23 | 10.92 |
+| binary128 | mpfix | 8.20 | 7.53 | 14.93 | 20.49 | 13.07 | 10.92 |
 | | MPFR | 8.37 | 7.31 | 16.17 | 13.95 | 30.27 | 7.78 |
 | | MPFR IEEE | 13.36 | 13.20 | 20.32 | 19.47 | 36.45 | 13.10 |
 | | Boost | 36.66 | 48.75 | 182.81 | 282.39 | | 41.92 |
 | | SoftFloat | 12.69 | 13.09 | 17.24 | 22.67 | 20.94 | 12.54 |
-| binary256 | mpfix | 12.30 | 14.76 | 30.39 | 63.76 | 37.06 | 15.53 |
+| binary256 | mpfix | 12.30 | 14.76 | 30.39 | 63.76 | 33.64 | 15.53 |
 | | MPFR | 15.60 | 31.92 | 73.56 | 104.82 | 42.13 | 20.00 |
 | | MPFR IEEE | 20.45 | 33.82 | 79.30 | 111.16 | 47.46 | 26.06 |
 | | Boost | 46.59 | 75.00 | 424.64 | 547.42 | | 55.02 |
-| binary512 | mpfix | 16.73 | 48.93 | 84.06 | 143.84 | 80.27 | 32.56 |
+| binary512 | mpfix | 16.73 | 48.93 | 84.06 | 143.84 | 70.45 | 32.56 |
 | | MPFR | 17.91 | 57.29 | 112.74 | 216.89 | 75.54 | 31.31 |
 | | MPFR IEEE | 22.70 | 62.49 | 117.64 | 220.71 | 81.25 | 36.39 |
 | | Boost | 63.36 | 169.23 | 1087.66 | 1121.13 | | 96.05 |
 
 Against MPFR IEEE, which gives the same results, mpfix is faster everywhere
-except binary128 square root, and level on binary512 fma. Native MPFR is ahead
-on binary128 square root (14.0 against 20.5 ns), on the binary128 dot step, and
-on binary512 fma and dot step. These are the targets for tuning: mpfix's fma is
-a straightforward double-width addition, and its square root has no special
-case for two limbs.
+except binary128 square root. Native MPFR is ahead on binary128 square root
+(14.0 against 20.5 ns) and on the binary128 and binary512 dot step. The square
+root has no special case for two limbs yet.
+
+The fma figures are from 2026-11-04, after tuning. It adds c to the exact
+product in a frame of 2L + 1 limbs, set by whichever of the two is larger, so
+that it needs no comparison or swap first, takes the sticky bit from the limbs
+shifted out, and shifts within a limb, the usual case, without the general
+shifts. That took binary128 from 24.2 to 13.1 ns, binary256 from 37.1 to 33.6
+and binary512 from 80.3 to 70.5, ahead of native MPFR at every size.
 
 SoftFloat, the reference software implementation of IEEE binary128, is 1.6
 and 1.7 times slower than mpfix for add and mul, and 1.1 to 1.2 times for
-division, square root and the dot step. Its fma is faster, 20.9 against
-24.2 ns: it adds to the exact 256-bit product directly, where mpfix's fma is the
-untuned double-width addition above.
+division, square root and the dot step, and 1.6 times for fma.
 
 The compiler matters: built with the Clang 19.1.5 that Visual Studio 2022
 ships, mpfix's binary128 square root took 30 ns instead of 20, the other
@@ -94,11 +98,11 @@ for square root.
 
 | Format | Library | add | mul | div | sqrt | fma | dot step |
 |---|---|---:|---:|---:|---:|---:|---:|
-| full 128 | mpfix | 8.32 | 7.58 | 17.57 | 20.22 | 23.91 | 10.66 |
+| full 128 | mpfix | 8.32 | 7.58 | 17.57 | 20.22 | 13.29 | 10.66 |
 | | MPFR | 7.88 | 13.95 | 36.02 | 101.39 | 32.60 | 9.61 |
-| full 256 | mpfix | 12.11 | 14.65 | 35.82 | 64.25 | 37.08 | 15.45 |
+| full 256 | mpfix | 12.11 | 14.65 | 35.82 | 64.25 | 33.50 | 15.45 |
 | | MPFR | 15.38 | 28.40 | 74.20 | 143.93 | 44.45 | 20.21 |
-| full 512 | mpfix | 16.12 | 48.94 | 85.88 | 143.78 | 80.42 | 32.43 |
+| full 512 | mpfix | 16.12 | 48.94 | 85.88 | 143.78 | 69.10 | 32.43 |
 | | MPFR | 17.65 | 57.43 | 111.38 | 231.01 | 77.16 | 31.23 |
 
 ### MSVC
@@ -359,8 +363,8 @@ stores arrays of `Float`, so it would pay that for each input and output.
 
 - **Scalar against MPFR: passed when measured** against an MSVC build of MPFR,
   with mpfix faster on every operation. Against the faster GCC build above it
-  still beats MPFR IEEE nearly everywhere, but native MPFR wins some binary128
-  operations and binary512 fma.
+  still beats MPFR IEEE nearly everywhere, but native MPFR wins binary128
+  square root and the dot step.
 - **Scalar against Boost, target 5x: not met.** Add is 3.8x to 4.5x and mul is
   3.5x to 6.6x. MPFR is the goal that matters, so this does not block anything.
 - **Batch on AVX2, target 1.2x: failed.** Batch stays out of the plan for AVX2.

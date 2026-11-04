@@ -1617,6 +1617,39 @@ class Float {
 
   // --- Fused multiply-add ---
 
+  // Shifts right by count >= 0 and folds the bits shifted out into the lowest
+  // bit, which is sticky.
+  template <std::size_t N>
+  static void ShiftRightSticky(std::array<limb_t, N>& x,
+                               std::int32_t count) noexcept {
+    if (count == 0) return;
+    if (count < kLimbBits) {
+      // The common case, within a limb.
+      const int bits = static_cast<int>(count);
+      const limb_t lost = x[0] << (kLimbBits - bits);
+      for (std::size_t i = 0; i + 1 < N; ++i) {
+        x[i] = (x[i] >> bits) | (x[i + 1] << (kLimbBits - bits));
+      }
+      x[N - 1] >>= bits;
+      x[0] |= lost != 0 ? 1 : 0;
+      return;
+    }
+    constexpr std::int32_t kBits = static_cast<std::int32_t>(N) * kLimbBits;
+    if (count >= kBits) {
+      const bool any = !detail::IsZero(x);
+      x.fill(0);
+      x[0] = any ? 1 : 0;
+      return;
+    }
+    const int words = static_cast<int>(count / kLimbBits);
+    const int bits = static_cast<int>(count % kLimbBits);
+    limb_t lost = 0;
+    for (int i = 0; i < words; ++i) lost |= x[static_cast<std::size_t>(i)];
+    if (bits != 0) lost |= x[static_cast<std::size_t>(words)] << (kLimbBits - bits);
+    detail::ShiftRight(x, static_cast<int>(count));
+    x[0] |= lost != 0 ? 1 : 0;
+  }
+
   template <class Env>
   static Float FmaSpecial(const Float& a, const Float& b, const Float& c,
                           bool product_negative, const Env& env) noexcept {
@@ -1652,61 +1685,44 @@ class Float {
       return FmaSpecial(a, b, c, product_negative, env);
     }
 
-    // Addition at double width, on the exact product. Limb 0 is a guard limb
-    // whose lowest bit is sticky, as in `Extended`.
+    // Addition at double width, on the exact product. Both operands sit in a
+    // frame of 2L + 1 limbs whose top bit has weight 2^exponent; limb 0 is a
+    // guard limb whose lowest bit is sticky, as in `Extended`. The product,
+    // in [1, 4), fills limbs 1 to 2L with its top bit possibly clear; c fills
+    // the top L limbs. Whichever has the higher frame keeps it, and the other
+    // shifts right into it.
     constexpr std::size_t kWide = 2 * kLimbs + 1;
     using Wide = std::array<limb_t, kWide>;
 
     const std::array<limb_t, 2 * kLimbs> exact =
         MultiplySignificands(a.limbs_, b.limbs_);
-    Wide big{};
-    Wide lesser{};
-    for (std::size_t i = 0; i < 2 * kLimbs; ++i) big[i + 1] = exact[i];
-    std::int32_t big_exponent = a.Exponent() + b.Exponent() + 1;
-    if ((big[kWide - 1] & kTopBit) == 0) {
-      detail::ShiftLeft(big, 1);
-      --big_exponent;
-    }
+    Wide product;
+    product[0] = 0;
+    for (std::size_t i = 0; i < 2 * kLimbs; ++i) product[i + 1] = exact[i];
+    Wide addend;
+    for (std::size_t i = 0; i <= kLimbs; ++i) addend[i] = 0;
     for (std::size_t i = 0; i < kLimbs; ++i) {
-      lesser[i + kLimbs + 1] = c.limbs_[i];
+      addend[i + kLimbs + 1] = c.limbs_[i];
     }
-    std::int32_t small_exponent = c.Exponent();
-    bool big_negative = product_negative;
-    bool small_negative = c.negative_ != 0;
+    const std::int32_t product_exponent = a.Exponent() + b.Exponent() + 1;
+    const std::int32_t distance = product_exponent - c.Exponent();
+    const bool addend_negative = c.negative_ != 0;
 
-    if (big_exponent < small_exponent ||
-        (big_exponent == small_exponent &&
-         detail::CompareLimbs(big, lesser) < 0)) {
-      const Wide temporary = big;
-      big = lesser;
-      lesser = temporary;
-      const std::int32_t exponent = big_exponent;
-      big_exponent = small_exponent;
-      small_exponent = exponent;
-      const bool negative = big_negative;
-      big_negative = small_negative;
-      small_negative = negative;
+    std::int32_t exponent;
+    if (distance >= 0) {
+      exponent = product_exponent;
+      ShiftRightSticky(addend, distance);
+    } else {
+      exponent = c.Exponent();
+      ShiftRightSticky(product, -distance);
     }
 
-    const std::int32_t distance = big_exponent - small_exponent;
-    constexpr int kWideBits = static_cast<int>(kWide) * kLimbBits;
-    if (distance >= kWideBits) {
-      lesser.fill(0);
-      lesser[0] = 1;
-    } else if (distance > 0) {
-      const int count = distance;
-      Wide lost = lesser;
-      detail::ShiftLeft(lost, kWideBits - count);
-      detail::ShiftRight(lesser, count);
-      lesser[0] |= detail::IsZero(lost) ? 0 : 1;
-    }
-
-    std::int32_t exponent = big_exponent;
     Wide total;
-    if (big_negative == small_negative) {
+    bool negative = product_negative;
+    if (product_negative == addend_negative) {
       carry_t carry = 0;
       for (std::size_t i = 0; i < kWide; ++i) {
-        total[i] = adc(big[i], lesser[i], carry);
+        total[i] = adc(product[i], addend[i], carry);
       }
       if (carry != 0) {
         const limb_t sticky = total[0] & 1;
@@ -1715,23 +1731,51 @@ class Float {
         total[kWide - 1] |= kTopBit;
         ++exponent;
       }
+    } else if (distance < 0) {
+      // c's frame: the shifted product lies below c.
+      carry_t borrow = 0;
+      for (std::size_t i = 0; i < kWide; ++i) {
+        total[i] = sbb(addend[i], product[i], borrow);
+      }
+      negative = addend_negative;
     } else {
       carry_t borrow = 0;
       for (std::size_t i = 0; i < kWide; ++i) {
-        total[i] = sbb(big[i], lesser[i], borrow);
+        total[i] = sbb(product[i], addend[i], borrow);
       }
-      if (detail::IsZero(total)) return Zero(env.rounding() == Rounding::kDown);
-      int leading = 0;
-      for (std::size_t i = kWide; i-- > 0;) {
-        if (total[i] != 0) {
-          leading += countl_zero(total[i]);
-          break;
+      if (borrow != 0) {
+        // |c| exceeded the product. In the product's frame that needs c
+        // shifted by at most one bit, which loses nothing, so the difference
+        // is exact: negate it.
+        carry_t carry = 1;
+        for (std::size_t i = 0; i < kWide; ++i) {
+          total[i] = adc(~total[i], 0, carry);
         }
-        leading += kLimbBits;
+        negative = addend_negative;
       }
-      if (leading != 0) detail::ShiftLeft(total, leading);
-      exponent -= leading;
     }
+    // Leading zeros from cancellation, or the one of a product below 2.
+    int leading = 0;
+    for (std::size_t i = kWide; i-- > 0;) {
+      if (total[i] != 0) {
+        leading += countl_zero(total[i]);
+        break;
+      }
+      leading += kLimbBits;
+    }
+    if (leading == static_cast<int>(kWide) * kLimbBits) {
+      return Zero(env.rounding() == Rounding::kDown);
+    }
+    if (leading >= kLimbBits) {
+      detail::ShiftLeft(total, leading);
+    } else if (leading != 0) {
+      // Within a limb: a product below 2, or cancellation of a few bits.
+      for (std::size_t i = kWide; i-- > 1;) {
+        total[i] = (total[i] << leading) | (total[i - 1] >> (kLimbBits - leading));
+      }
+      total[0] <<= leading;
+    }
+    exponent -= leading;
 
     Extended value;
     for (std::size_t i = 0; i < kLimbs; ++i) {
@@ -1740,7 +1784,7 @@ class Float {
     limb_t lost = 0;
     for (std::size_t i = 0; i < kLimbs; ++i) lost |= total[i];
     value.rest = total[kLimbs] | (lost != 0 ? 1 : 0);
-    return Finish(big_negative, exponent, value, env);
+    return Finish(negative, exponent, value, env);
   }
 
   // --- Remainder ---
