@@ -33,9 +33,33 @@ endif()
 # the batch benchmark, which bench/CMakeLists.txt fetches it for.
 add_library(mpfix INTERFACE)
 add_library(mpfix::mpfix ALIAS mpfix)
+include(GNUInstallDirs)
 target_include_directories(mpfix INTERFACE
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(mpfix INTERFACE cxx_std_20)
+
+# cmake --install puts the headers and a package configuration in place, for
+# find_package(mpfix) and the target mpfix::mpfix.
+option(MPFIX_INSTALL "Generate the install rules" ${PROJECT_IS_TOP_LEVEL})
+if(MPFIX_INSTALL)
+  include(CMakePackageConfigHelpers)
+  set(mpfix_config_dir "${CMAKE_INSTALL_DATADIR}/cmake/mpfix")
+  install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  install(TARGETS mpfix EXPORT mpfixTargets)
+  install(EXPORT mpfixTargets NAMESPACE mpfix::
+          DESTINATION "${mpfix_config_dir}")
+  configure_package_config_file(cmake/mpfixConfig.cmake.in
+    "${PROJECT_BINARY_DIR}/mpfixConfig.cmake"
+    INSTALL_DESTINATION "${mpfix_config_dir}")
+  # Header-only: any architecture, and compatible within a major version.
+  write_basic_package_version_file("${PROJECT_BINARY_DIR}/mpfixConfigVersion.cmake"
+    COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
+  install(FILES "${PROJECT_BINARY_DIR}/mpfixConfig.cmake"
+                "${PROJECT_BINARY_DIR}/mpfixConfigVersion.cmake"
+          DESTINATION "${mpfix_config_dir}")
+  install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/mpfix")
+endif()
 
 if(MPFIX_BUILD_TESTS)
   enable_testing()

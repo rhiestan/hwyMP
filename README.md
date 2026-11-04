@@ -115,7 +115,18 @@ dependency of the library; only this header needs it.
 ## Building
 
 The library is header-only and needs nothing but a C++20 compiler: add
-`include/` to the include path, or link the CMake target `mpfix::mpfix`.
+`include/` to the include path, or link the CMake target `mpfix::mpfix`, from
+`add_subdirectory`, `FetchContent` or an installed copy:
+
+```
+cmake -S . -B build -DMPFIX_BUILD_TESTS=OFF
+cmake --install build --prefix /opt/mpfix
+```
+
+```cmake
+find_package(mpfix 0.1 REQUIRED)  # With /opt/mpfix in CMAKE_PREFIX_PATH.
+target_link_libraries(app PRIVATE mpfix::mpfix)
+```
 
 The tests need CMake 3.25 or later and Ninja. A sibling `../eigen` checkout is
 used when present, `../boost_1_92_0` for the Boost test and the benchmarks, and
@@ -138,6 +149,20 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMPFIX_ENABLE_ORACLE=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+Beyond the unit and MPFR tests, CI runs:
+
+- the whole suite under AddressSanitizer and UndefinedBehaviorSanitizer,
+  `-DMPFIX_SANITIZE=address,undefined`;
+- Berkeley TestFloat 3e, whose `testfloat_gen` checks every result and flag of
+  the arithmetic, fma, remainder, square root, rounding to integers, the
+  comparisons and the conversions in binary16, 32, 64 and 128, in all rounding
+  modes: `-DMPFIX_TESTFLOAT_GEN=path/to/testfloat_gen`;
+- libFuzzer on arithmetic and on text conversions against MPFR,
+  `-DMPFIX_BUILD_FUZZERS=ON` with Clang; elsewhere the same targets run on
+  random inputs as tests;
+- weekly, the MPFR tests at 50 times their size (`MPFIX_TEST_SCALE=50`),
+  TestFloat at level 2 and 20 minutes of each fuzzer.
 
 ## Licence
 

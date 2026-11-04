@@ -20,6 +20,12 @@
 
 #include "mpfix/float.h"
 
+#ifdef MPFIX_BENCH_SOFTFLOAT
+extern "C" {
+#include "softfloat.h"
+}
+#endif
+
 #if defined(_WIN32)
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -156,6 +162,69 @@ struct BoostEngine {
   }
 };
 
+#ifdef MPFIX_BENCH_SOFTFLOAT
+// Berkeley SoftFloat's binary128, rounding to nearest-even with all flags, as
+// mpfix does.
+struct SoftFloatEngine {
+  using Value = float128_t;
+  static const char* Name() { return "SoftFloat"; }
+  static void Init(Value&) {}
+  static void Load(Value& x, const Sample& s) {
+    mpfix::binary128::Limbs limbs;
+    std::copy(s.limbs.begin(), s.limbs.end(), limbs.begin());
+    const auto bits =
+        mpfix::binary128::FromRaw(s.negative, s.exponent, limbs).to_bits();
+    x.v[0] = bits[0];
+    x.v[1] = bits[1];
+  }
+  static void Add(Value& r, const Value& a, const Value& b) {
+    r = f128_add(a, b);
+  }
+  static void Mul(Value& r, const Value& a, const Value& b) {
+    r = f128_mul(a, b);
+  }
+  static void Div(Value& r, const Value& a, const Value& b) {
+    r = f128_div(a, b);
+  }
+  static void Sqrt(Value& r, const Value& a) { r = f128_sqrt(a); }
+  static constexpr bool kHasFma = true;
+  static void Fma(Value& r, const Value& a, const Value& b, const Value& c) {
+    r = f128_mulAdd(a, b, c);
+  }
+  static std::uint64_t Fingerprint(const Value& x) { return x.v[0]; }
+};
+
+// SoftFloat and mpfix agree bit for bit on the benchmark's inputs, which also
+// shows that the values reach SoftFloat intact.
+bool SoftFloatAgrees() {
+  using F = mpfix::binary128;
+  const std::vector<Sample> sa = MakeSamples(113, 1);
+  const std::vector<Sample> sb = MakeSamples(113, 2);
+  const std::vector<Sample> sc = MakeSamples(113, 3);
+  const auto same = [](const F& x, const float128_t& y) {
+    const auto bits = x.to_bits();
+    return bits[0] == y.v[0] && bits[1] == y.v[1];
+  };
+  for (int i = 0; i < kCount; ++i) {
+    F a, b, c;
+    HwyEngine<F>::Load(a, sa[i]);
+    HwyEngine<F>::Load(b, sb[i]);
+    HwyEngine<F>::Load(c, sc[i]);
+    float128_t x, y, z;
+    SoftFloatEngine::Load(x, sa[i]);
+    SoftFloatEngine::Load(y, sb[i]);
+    SoftFloatEngine::Load(z, sc[i]);
+    if (!same(a + b, f128_add(x, y)) || !same(a * b, f128_mul(x, y)) ||
+        !same(a / b, f128_div(x, y)) || !same(sqrt(abs(a)), f128_sqrt(
+                                            {{x.v[0], x.v[1] & ~(1ull << 63)}})) ||
+        !same(fma(a, b, c), f128_mulAdd(x, y, z))) {
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
 volatile std::uint64_t sink;
 
 // Repeats `pass`, which performs `operations` operations, and returns the best
@@ -290,6 +359,15 @@ void ReportFormat(const char* format) {
   mpfr_set_emin(mpfr_get_emin_min());
   mpfr_set_emax(mpfr_get_emax_max());
   Report<BoostEngine<P>>(format, P);
+#ifdef MPFIX_BENCH_SOFTFLOAT
+  if constexpr (P == 113 && E == 15) {
+    if (!SoftFloatAgrees()) {
+      std::printf("SoftFloat disagrees with mpfix; not measured\n");
+    } else {
+      Report<SoftFloatEngine>(format, P);
+    }
+  }
+#endif
 }
 
 }  // namespace

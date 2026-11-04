@@ -59,8 +59,11 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    are Float's, correctly rounded, also those Boost would compute with
    Boost.Math, and std::numeric_limits for the numbers. Tested with Boost
    1.92, with Boost.Math, and with the standalone Boost.Multiprecision. Done.
-9. Hardening and release: long differential runs, TestFloat, sanitizers,
-   fuzzing, and a benchmark report.
+9. Hardening and release. Done: ASan and UBSan over the whole suite in CI;
+   Berkeley TestFloat 3e for binary16, 32, 64 and 128, all results and flags
+   in all modes; libFuzzer targets for arithmetic and text against MPFR;
+   weekly long runs; install rules with a CMake package; a benchmark summary
+   and current MSVC figures. To do: tag the first release.
 
 ## Postponed
 

@@ -10,6 +10,11 @@ type, so it has no fma column.
 - mpfix and Boost 1.92: Clang 22.1.2, `-O3 -march=native`.
 - GMP 6.3.0 and MPFR 4.3.0-dev: built as DLLs with MSYS2's GCC, GMP as a fat
   binary that picks its assembly for the running CPU.
+- Berkeley SoftFloat 3e, for binary128 only: a DLL built with MSYS2's GCC,
+  `-O2`, with its default 8086-SSE configuration and
+  `SOFTFLOAT_FAST_INT64`. Measured on 2026-11-04; the benchmark first checks
+  that its results equal mpfix's on all inputs. Like mpfix, it rounds in five
+  modes and raises the IEEE flags.
 
 "MPFR" uses its native wide exponent range, which favours it. "MPFR IEEE" adds
 the steps that IEEE-identical results need, matching what mpfix delivers.
@@ -19,6 +24,32 @@ was much slower: at binary128 its add, mul and sqrt took 12.0, 14.8 and 28.5 ns,
 against 8.4, 7.3 and 14.0 here. Benchmarks against MPFR on Windows should use a
 GCC build.
 
+## Summary
+
+Speedups of mpfix over MPFR and Boost's `cpp_bin_float`, from the tables
+below, with Clang. All three give correctly rounded results, mpfix and "MPFR
+IEEE" the same ones; Boost has no subnormals or flags.
+
+| | binary128 | binary256 | binary512 |
+|---|---|---|---|
+| add, mul, div, fma over MPFR IEEE | 1.4x to 1.8x | 1.3x to 2.6x | 1.0x to 1.4x |
+| add, mul, div over SoftFloat | 1.6x, 1.7x, 1.2x | | |
+| sqrt, fma over SoftFloat | 1.1x, 0.86x | | |
+| sqrt over MPFR IEEE | 0.95x | 1.7x | 1.5x |
+| add and mul over Boost | 4.5x, 6.5x | 3.8x, 5.1x | 3.8x, 3.5x |
+| div and sqrt over Boost | 12x, 14x | 14x, 8.6x | 13x, 7.8x |
+| parsing over MPFR | 2.5x | 2.2x | 1.5x |
+| printing over MPFR | 1.0x | 1.0x | 0.85x |
+| exp and log over MPFR | 2.5x, 4.5x | 2.5x, 3.6x | 1.7x, 2.1x |
+| sin, cos, tan over MPFR | 2.5x, 1.8x, 2.8x | 2.3x, 1.7x, 2.5x | 1.6x, 1.2x, 1.8x |
+| asin, acos, atan over MPFR | 6.9x, 6.5x, 5.8x | 8.1x, 7.5x, 10x | 5.7x, 5.3x, 7.8x |
+| erf, erfc, tgamma over MPFR | 4.5x, 12x, 4.7x | 4.1x, 9.0x, 3.7x | 3.2x, 5.1x, 2.2x |
+| exp and log over Boost | 12x, 16x | 26x, 24x | 46x, 28x |
+
+The exceptions are binary128 square root, where MPFR IEEE is 5% faster and
+native MPFR 1.5 times; binary128 fma, where SoftFloat is 1.16 times faster;
+native MPFR's binary512 fma and dot step; and printing at binary512. MSVC builds of mpfix are 1.2 to 3 times slower than Clang's.
+
 ## Scalar
 
 | Format | Library | add | mul | div | sqrt | fma | dot step |
@@ -27,6 +58,7 @@ GCC build.
 | | MPFR | 8.37 | 7.31 | 16.17 | 13.95 | 30.27 | 7.78 |
 | | MPFR IEEE | 13.36 | 13.20 | 20.32 | 19.47 | 36.45 | 13.10 |
 | | Boost | 36.66 | 48.75 | 182.81 | 282.39 | | 41.92 |
+| | SoftFloat | 12.69 | 13.09 | 17.24 | 22.67 | 20.94 | 12.54 |
 | binary256 | mpfix | 12.30 | 14.76 | 30.39 | 63.76 | 37.06 | 15.53 |
 | | MPFR | 15.60 | 31.92 | 73.56 | 104.82 | 42.13 | 20.00 |
 | | MPFR IEEE | 20.45 | 33.82 | 79.30 | 111.16 | 47.46 | 26.06 |
@@ -42,6 +74,16 @@ on binary128 square root (14.0 against 20.5 ns), on the binary128 dot step, and
 on binary512 fma and dot step. These are the targets for tuning: mpfix's fma is
 a straightforward double-width addition, and its square root has no special
 case for two limbs.
+
+SoftFloat, the reference software implementation of IEEE binary128, is 1.6
+and 1.7 times slower than mpfix for add and mul, and 1.1 to 1.2 times for
+division, square root and the dot step. Its fma is faster, 20.9 against
+24.2 ns: it adds to the exact 256-bit product directly, where mpfix's fma is the
+untuned double-width addition above.
+
+The compiler matters: built with the Clang 19.1.5 that Visual Studio 2022
+ships, mpfix's binary128 square root took 30 ns instead of 20, the other
+operations about the same.
 
 ### Full-limb precision
 
@@ -61,15 +103,20 @@ for square root.
 
 ### MSVC
 
-MSVC 19.44 builds of mpfix are much slower at small sizes, and at binary128 they
-are slower than MPFR. This is an open issue. These figures predate division and
-square root.
+MSVC 19.44 builds of mpfix, `/O2`, remeasured on 2026-11-04, against the Clang
+figures above. They are 1.2 to 3 times slower than Clang's, most at binary128,
+where they are also slower than MPFR (here MPFR 4.2.2 from vcpkg, built with
+MSVC) except in division. Why is still open; Clang is the compiler to use for
+speed on Windows.
 
-| Format | add | mul | dot step |
-|---|---:|---:|---:|
-| binary128 | 21.41 | 24.03 | 24.13 |
-| binary256 | 23.82 | 30.16 | 28.07 |
-| binary512 | 28.13 | 57.80 | 40.56 |
+| Format | Compiler | add | mul | div | sqrt | fma | dot step |
+|---|---|---:|---:|---:|---:|---:|---:|
+| binary128 | Clang | 8.20 | 7.53 | 14.93 | 20.49 | 24.23 | 10.92 |
+| | MSVC | 21.59 | 23.91 | 22.53 | 34.43 | 49.04 | 24.06 |
+| binary256 | Clang | 12.30 | 14.76 | 30.39 | 63.76 | 37.06 | 15.53 |
+| | MSVC | 23.71 | 29.31 | 45.04 | 77.64 | 58.72 | 27.40 |
+| binary512 | Clang | 16.73 | 48.93 | 84.06 | 143.84 | 80.27 | 32.56 |
+| | MSVC | 27.58 | 56.58 | 120.51 | 176.40 | 104.75 | 40.29 |
 
 ## Strings
 

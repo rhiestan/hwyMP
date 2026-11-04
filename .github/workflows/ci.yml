@@ -22,6 +22,7 @@ jobs:
             cc: gcc
             cxx: g++
             testfloat: true
+            install: true
           - name: Linux Clang
             os: ubuntu-24.04
             cc: clang
@@ -80,6 +81,15 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # The installed package, found by another project.
+      - name: Install
+        if: matrix.install
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/mpfix"
+          cmake -S tests/install -B build-install -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mpfix"
+          cmake --build build-install
+          build-install/install_check
 
       # A minute of each fuzzer on every push; the nightly run goes longer.
       - name: Fuzz
