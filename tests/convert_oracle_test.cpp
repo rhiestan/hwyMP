@@ -788,6 +788,24 @@ TEST(ConvertOracle, ShortestBinary256) {
 TEST(ConvertOracle, ShortestBinary512) {
   CheckShortestRandomly<binary512>(600, 63);
 }
+
+// The lowest subnormals have few bits, and their rounding intervals may
+// cross a power of ten.
+template <class F>
+void CheckShortestLowSubnormals() {
+  for (limb_t bits = 1; bits <= 4096; ++bits) {
+    typename F::Bits raw{};
+    raw[0] = bits;
+    if (!CheckShortest(F::from_bits(raw))) return;
+  }
+}
+
+TEST(ConvertOracle, ShortestLowSubnormals) {
+  CheckShortestLowSubnormals<binary128>();
+  CheckShortestLowSubnormals<binary256>();
+  CheckShortestLowSubnormals<binary512>();
+}
+
 TEST(ConvertOracle, ShortestExhaustively) {
   using Small = Float<8, 5>;
   for (limb_t bits = 0; bits < (limb_t{1} << 13); ++bits) {

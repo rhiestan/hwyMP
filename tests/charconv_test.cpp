@@ -285,6 +285,8 @@ TEST(Charconv, ShortestRoundTrips) {
   EXPECT_EQ(to_string(binary128::MaxFinite()),
             "1.189731495357231765085759326628007e+4932");
   EXPECT_EQ(to_string(binary128::MinSubnormal()), "6e-4966");
+  // Its rounding interval holds 1e-78983, but 9e-78984 is as short and nearer.
+  EXPECT_EQ(to_string(binary256::MinSubnormal() * binary256(4)), "9e-78984");
 }
 
 TEST(Charconv, ExtremesOfBinary512) {

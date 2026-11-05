@@ -319,7 +319,13 @@ void CheckBound(const char* name, const detail::Tracked<W>& t, mpfr_ptr exact,
   const View<W> view(t.value);
   mpfr_sub(error.get(), view.get(), exact, MPFR_RNDN);
   mpfr_abs(error.get(), error.get(), MPFR_RNDN);
-  mpfr_mul_2si(bound.get(), exact, -W::kPrecision, MPFR_RNDN);
+  // The units are relative to the computed value, as RoundTracked reads them.
+  // That matters where a sum cancels, as lgamma's does next to 1 and 2: its
+  // bound may then exceed the value many times over. From 2^60 units on,
+  // RoundTracked takes them for no bound at all, as for a sum that cancelled
+  // to zero.
+  if (!(t.units < 0x1p60)) return;
+  mpfr_mul_2si(bound.get(), view.get(), -W::kPrecision, MPFR_RNDN);
   mpfr_mul_d(bound.get(), bound.get(), t.units, MPFR_RNDN);
   mpfr_abs(bound.get(), bound.get(), MPFR_RNDN);
   if (mpfr_cmp(error.get(), bound.get()) > 0) {

@@ -1127,6 +1127,13 @@ bool ToShortestDigitsFast(const Float<P, E>& x, Decimal& result) {
       std::size_t keep = 0;
       while (below[keep] == above[keep]) ++keep;
       ++keep;
+      // When the range crosses a power of ten 10^m, which happens to a
+      // subnormal of few bits, and x lies below it, the one-digit multiples
+      // of 10^(m-1) under 10^m are as short and nearer to x.
+      const auto zeros = [](const std::string& digits, std::size_t count) {
+        return digits.find_first_not_of('0') >= count;
+      };
+      if (zeros(below, keep) && zeros(nearby, keep)) ++keep;
       // Multiples of 10^dropped, as prefixes of `keep` digits.
       const auto dropped = static_cast<std::size_t>(kWidth) - keep;
       std::string lowest = below.substr(0, keep);
