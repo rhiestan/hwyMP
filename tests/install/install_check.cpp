@@ -1,7 +1,8 @@
 // Copyright 2026 The mpfix Authors
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
-// Uses each public header of an installed mpfix.
+// Uses each public header that needs no other library, of an installed mpfix
+// or of one added as a subdirectory.
 
 #include <cstdio>
 

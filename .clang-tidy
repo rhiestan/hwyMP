@@ -26,6 +26,7 @@ Checks: >
   -modernize-avoid-c-arrays,
   -modernize-return-braced-init-list,
   -modernize-use-auto,
+  -modernize-use-constraints,
   -modernize-use-designated-initializers,
   -modernize-use-nodiscard,
   -modernize-use-trailing-return-type,
@@ -68,6 +69,8 @@ Checks: >
 #   redundant-parentheses: (std::numeric_limits<T>::max)() guards against the
 #     min and max macros of windows.h.
 #   redundant-typename: older C++20 compilers still need the typename.
+#   use-constraints: clang-tidy 18 crashes in it on Boost 1.83's headers, and
+#     mpfix uses concepts rather than enable_if throughout.
 #   use-std-min-max: the comparisons mix integer types, and float.h does not
 #     include <algorithm>.
 #   (google-)braces-around-statements, const-correctness, use-auto,
@@ -83,7 +86,8 @@ CheckOptions:
   # Flag only literals that are the constant, not bounds just above it.
   modernize-use-std-numbers.DiffThreshold: '1e-12'
 
-# Only diagnose mpfix's own files, not those of GoogleTest, Eigen, Boost,
-# Highway, GMP or MPFR.
-HeaderFilterRegex: '.*'
-ExcludeHeaderFilterRegex: '([/\\]_deps[/\\]|[/\\]vcpkg_installed[/\\]|[/\\]boost[/\\]|[/\\]hwy[/\\]|[/\\]Eigen[/\\]|[/\\]gtest[/\\]|[/\\]gmock[/\\])'
+# Only diagnose mpfix's own headers, those directly in include/mpfix, tests,
+# fuzz and bench, not those of GoogleTest, Eigen, Boost, Highway, GMP or MPFR.
+# A pattern that keeps rather than one that excludes, since clang-tidy 18 has
+# no ExcludeHeaderFilterRegex.
+HeaderFilterRegex: '(^|.*[/\\])(include[/\\]mpfix|tests|fuzz|bench)[/\\][^/\\]*$'

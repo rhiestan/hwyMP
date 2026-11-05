@@ -410,13 +410,16 @@ class Float {
   template <class T>
   static constexpr bool kExactFrom = detail::ExactlyConvertible<P, E, T>();
 
+  // clang-tidy 18 does not see the conditional explicit of these two.
   template <detail::Arithmetic T>
+  // NOLINTNEXTLINE(google-explicit-constructor)
   explicit(!kExactFrom<T>) Float(T value) noexcept
       : Float(ConvertFrom(value, detail::NearestEnv{})) {}
 
   template <int P2, int E2>
     requires(P2 != P || E2 != E)
   explicit(!kExactFrom<Float<P2, E2>>)
+      // NOLINTNEXTLINE(google-explicit-constructor)
       Float(const Float<P2, E2>& value) noexcept
       : Float(ConvertFormat(value, detail::NearestEnv{})) {}
 

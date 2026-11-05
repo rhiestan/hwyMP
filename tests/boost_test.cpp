@@ -225,12 +225,16 @@ TEST(Boost, ComparisonsAndLimits) {
 }
 
 TEST(Boost, ExpressionTemplates) {
+  // The analyzer of Clang 18 takes the functors that Boost 1.83's expression
+  // templates make for sqrt and exp for dangling stack memory.
+#ifndef __clang_analyzer__
   using T = mp::number<boost_backend<237, 19>, mp::et_on>;
   const T a = 3, b = T(1) / 7;
   const T c = a * b + sqrt(a) - b / a;
   const binary256 x = 3, y = binary256(1) / 7;
   EXPECT_EQ(c.backend().value(), x * y + sqrt(x) - y / x);
   EXPECT_EQ(T(exp(a * b)).backend().value(), exp(x * y));
+#endif
 }
 
 // The example in README.md.
@@ -248,7 +252,7 @@ TEST(Boost, ReadmeExample) {
 #ifdef BOOST_MP_MATH_AVAILABLE
 // Boost.Math runs on the backend, at its full precision.
 TEST(Boost, BoostMath) {
-  const Num pi = boost::math::constants::pi<Num>();
+  const Num& pi = boost::math::constants::pi<Num>();
   EXPECT_TRUE(Same(pi, mpfix::pi<Quad>()));
   // zeta(2) = pi^2 / 6, within a few ulps.
   const Num zeta = boost::math::zeta(Num(2));

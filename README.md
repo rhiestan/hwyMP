@@ -1,7 +1,8 @@
 # mpfix
 
 Fixed-size IEEE 754 floating-point types for C++, built for speed at 128 to 512
-bits. Work in progress: see [docs/PLAN.md](docs/PLAN.md).
+bits. Version 0.1.0: see [CHANGELOG.md](CHANGELOG.md), and
+[docs/PLAN.md](docs/PLAN.md) for the plan.
 
 ## Use
 
@@ -101,8 +102,7 @@ code written for Boost's types, and for Boost.Math:
 
 mpfix::boost_binary256 x = 2;
 mpfix::boost_binary256 y = sqrt(x) + boost::multiprecision::erf(x);
-std::cout << std::setprecision(70) << y << '
-';
+std::cout << std::setprecision(70) << y << '\n';
 ```
 
 `boost_binary128`, `boost_binary256` and `boost_binary512` give exactly Float's
@@ -161,6 +161,8 @@ Beyond the unit and MPFR tests, CI runs:
   the arithmetic, fma, remainder, square root, rounding to integers, the
   comparisons and the conversions in binary16, 32, 64 and 128, in all rounding
   modes: `-DMPFIX_TESTFLOAT_GEN=path/to/testfloat_gen`;
+- clang-tidy on Linux, on the tests, fuzzers and benchmarks, where any
+  finding fails;
 - libFuzzer on arithmetic and on text conversions against MPFR,
   `-DMPFIX_BUILD_FUZZERS=ON` with Clang; elsewhere the same targets run on
   random inputs as tests;

@@ -31,6 +31,7 @@ jobs:
             os: macos-15
             cc: clang
             cxx: clang++
+            install: true
           # Address and undefined-behaviour sanitizers, optimized as in Release
           # so that the oracle tests still finish in time.
           - name: Linux Clang ASan UBSan
@@ -82,16 +83,20 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-      # The installed package, found by another project.
+      # The installed package, found by another project, and the source tree
+      # added to one as a subdirectory, as FetchContent does.
       - name: Install
         if: matrix.install
         run: |
           cmake --install build --prefix "$RUNNER_TEMP/mpfix"
-          cmake -S tests/install -B build-install -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mpfix"
+          cmake -S tests/install -B build-install -G Ninja -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mpfix"
           cmake --build build-install
           build-install/install_check
+          cmake -S tests/install -B build-subdirectory -G Ninja -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DMPFIX_SOURCE_DIR="$PWD"
+          cmake --build build-subdirectory
+          build-subdirectory/install_check
 
-      # A minute of each fuzzer on every push; the nightly run goes longer.
+      # A minute of each fuzzer on every push; the weekly long run goes longer.
       - name: Fuzz
         if: matrix.fuzz
         run: |
@@ -99,6 +104,38 @@ jobs:
             mkdir -p "corpus/$fuzzer"
             "build/tests/fuzz/$fuzzer" -max_total_time=60 -print_final_stats=1 "corpus/$fuzzer"
           done
+
+  # clang-tidy with the checks of .clang-tidy, on everything the build
+  # compiles: the tests, fuzzers and benchmarks, and so the headers, with the
+  # runner's Clang and clang-tidy. Any finding fails the job.
+  clang-tidy:
+    name: Linux clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev libmpfr-dev libmpc-dev libboost-dev ninja-build
+          clang-tidy --version
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DMPFIX_ENABLE_ORACLE=ON
+          -DMPFIX_BUILD_FUZZERS=ON
+          -DMPFIX_BUILD_BENCHMARKS=ON
+          -DMPFIX_BOOST_DIR=/usr/include
+          -DMPFIX_CLANG_TIDY=ON
+          "-DMPFIX_CLANG_TIDY_EXE=clang-tidy;--warnings-as-errors=*"
+
+      # On past failures, so that one run reports every finding.
+      - name: Build
+        run: cmake --build build -- -k 0
 
   windows:
     name: ${{ matrix.name }}
@@ -152,3 +189,17 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
+
+      # The installed package with MSVC, whose layout and tools differ.
+      - name: Install
+        if: matrix.preset == 'windows-msvc'
+        shell: pwsh
+        run: |
+          cmake --install build/${{ matrix.preset }} --prefix "$env:RUNNER_TEMP/mpfix"
+          if ($LASTEXITCODE -ne 0) { throw "install failed" }
+          cmake -S tests/install -B build-install -G Ninja -DCMAKE_CXX_COMPILER=cl "-DCMAKE_PREFIX_PATH=$env:RUNNER_TEMP/mpfix"
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build-install
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          build-install/install_check.exe
+          if ($LASTEXITCODE -ne 0) { throw "install_check failed" }

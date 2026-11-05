@@ -30,8 +30,9 @@ or beat MPFR at 128 to 512 bits, with permissive licensing and Eigen support.
    scalbn, logb: done. Division and square root are 1.4x to 3.5x faster than
    MPFR. FMA, tuned in phase 9, is 1.15x to 2.8x faster than MPFR IEEE.
 4. Correctly rounded conversions: float, double, integers, between formats, and
-   strings in both directions: done. Decimal printing and parsing are faster
-   than MPFR at every size, with shortest round-trip output as well.
+   strings in both directions: done. Decimal parsing is 1.5 to 2.5 times
+   faster than MPFR, printing level with it and 0.85 times its speed at
+   binary512, with shortest round-trip output as well.
 5. Eigen integration: NumTraits, numeric_limits, ADL math, decomposition tests:
    done, in `mpfix/eigen.h`, for Eigen 5.0.1. A Float of zero bytes is now +0,
    since Eigen clears trivially copyable scalars with memset.

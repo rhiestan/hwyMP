@@ -64,6 +64,7 @@ class boost_backend {
   template <int P2, int E2>
     requires(P2 != P || E2 != E)
   explicit(!value_type::template kExactFrom<Float<P2, E2>>)
+      // NOLINTNEXTLINE(google-explicit-constructor): misread by clang-tidy 18.
       boost_backend(const boost_backend<P2, E2>& other) noexcept
       : value_(static_cast<value_type>(other.value())) {}
 

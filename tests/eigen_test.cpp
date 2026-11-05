@@ -177,7 +177,11 @@ TYPED_TEST(EigenDecompositions, Cholesky) {
 TYPED_TEST(EigenDecompositions, SingularValues) {
   using F = TypeParam;
   std::mt19937_64 random(3);
-  for (const auto& [rows, cols] : {std::pair{1, 1}, {7, 7}, {10, 6}}) {
+  // Plain ints rather than structured bindings, which the lambda captures and
+  // the analyzer of Clang 18 then takes for uninitialized.
+  for (const std::pair<int, int>& shape : {std::pair{1, 1}, {7, 7}, {10, 6}}) {
+    const int rows = shape.first;
+    const int cols = shape.second;
     const Matrix<F> a = RandomMatrix<F>(random, rows, cols);
     const auto check = [&](const auto& svd, const char* what) {
       const Matrix<F>& u = svd.matrixU();
