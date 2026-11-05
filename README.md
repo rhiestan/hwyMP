@@ -165,7 +165,8 @@ Beyond the unit and MPFR tests, CI runs:
   `-DMPFIX_BUILD_FUZZERS=ON` with Clang; elsewhere the same targets run on
   random inputs as tests;
 - weekly, the MPFR tests at 50 times their size (`MPFIX_TEST_SCALE=50`),
-  TestFloat at level 2 and 20 minutes of each fuzzer.
+  TestFloat at level 2 (mulAdd beyond binary16 at level 1) and 20 minutes of
+  each fuzzer.
 
 ## Licence
 

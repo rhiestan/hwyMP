@@ -98,9 +98,16 @@ if(MPFIX_TESTFLOAT_GEN)
     endforeach()
   endforeach()
   foreach(function IN LISTS mpfix_testfloat_functions)
+    # Level 2 of the three operands of mulAdd takes an hour in binary16 and
+    # more than four hours in each wider format, past the limit of a CI job.
+    # Those run at level 1.
+    set(level ${MPFIX_TESTFLOAT_LEVEL})
+    if(function MATCHES "_mulAdd$" AND NOT function STREQUAL "f16_mulAdd")
+      set(level 1)
+    endif()
     add_test(NAME testfloat.${function}
              COMMAND testfloat_check "${MPFIX_TESTFLOAT_GEN}" ${function}
-                     ${MPFIX_TESTFLOAT_LEVEL})
+                     ${level})
   endforeach()
 endif()
 

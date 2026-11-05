@@ -1,6 +1,7 @@
 name: Long runs
 
-# The differential tests at 50 times their usual size, TestFloat at level 2,
+# The differential tests at 50 times their usual size, TestFloat at level 2
+# (mulAdd beyond binary16 at level 1),
 # and the fuzzers for 20 minutes each, weekly and on demand.
 on:
   schedule:
