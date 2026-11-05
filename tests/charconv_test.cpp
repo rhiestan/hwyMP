@@ -23,6 +23,7 @@
 #include <string>
 
 #include "mpfix/bigint.h"
+#include "mpfix/pi.h"
 
 namespace mpfix {
 namespace {
@@ -116,6 +117,39 @@ TEST(BigUint, SmallDivisionAndShifts) {
     shifted.ShiftRight(shift);
     ASSERT_EQ(Compare(shifted, a), 0);
   }
+}
+
+// The quotients of pi.h, through Newton's reciprocal from the first limb on,
+// against long division. Quotients of more than 4096 bits take Newton steps
+// in the reciprocal too, from above and from below.
+TEST(BigUint, NewtonQuotient) {
+  std::mt19937_64 random(3);
+  for (int i = 0; i < 200; ++i) {
+    const BigUint d = RandomBig(random, 1 + random() % 40);
+    const BigUint a = RandomBig(random, d.limbs().size() + random() % 160);
+    BigUint quotient;
+    BigUint remainder;
+    BigUint::DivRem(a, d, quotient, remainder);
+    ASSERT_EQ(Compare(detail::Quotient(a, d, 1), quotient), 0) << i;
+  }
+}
+
+TEST(BigUint, SignedAddition) {
+  using detail::SignedBig;
+  const auto add = [](limb_t a, bool a_negative, limb_t b, bool b_negative) {
+    const SignedBig sum =
+        detail::AddSigned({BigUint(a), a_negative}, {BigUint(b), b_negative});
+    const auto magnitude = static_cast<std::int64_t>(sum.magnitude.limbs().empty()
+                                                         ? 0
+                                                         : sum.magnitude.limbs()[0]);
+    return sum.negative ? -magnitude : magnitude;
+  };
+  EXPECT_EQ(add(5, false, 3, false), 8);
+  EXPECT_EQ(add(5, true, 3, true), -8);
+  EXPECT_EQ(add(5, false, 3, true), 2);
+  EXPECT_EQ(add(3, false, 5, true), -2);
+  EXPECT_EQ(add(3, true, 5, false), 2);
+  EXPECT_EQ(add(4, true, 4, false), 0);
 }
 
 // --- Output ---
@@ -287,6 +321,33 @@ TEST(Charconv, ShortestRoundTrips) {
   EXPECT_EQ(to_string(binary128::MinSubnormal()), "6e-4966");
   // Its rounding interval holds 1e-78983, but 9e-78984 is as short and nearer.
   EXPECT_EQ(to_string(binary256::MinSubnormal() * binary256(4)), "9e-78984");
+}
+
+// The binary search for the shortest digits, the fallback when the fast path
+// cannot decide far from 1, agrees with the usual result: the fast path's or
+// Burger and Dybvig's. Random bits give every exponent, subnormals included.
+template <class F>
+void CheckShortestBySearch(int iterations, std::uint64_t seed) {
+  std::mt19937_64 random(seed);
+  for (int i = 0; i < iterations; ++i) {
+    typename F::Bits bits{};
+    for (auto& limb : bits) limb = random();
+    F x = F::from_bits(bits);
+    if (!x.is_finite() || x.is_zero()) continue;
+    // Small subnormals, whose rounding intervals are wide, now and then.
+    if (i % 8 == 0) x = F::MinSubnormal() * F(static_cast<double>(1 + random() % 64));
+    const detail::Decimal expected = detail::ToShortestDigits(x);
+    const detail::Decimal searched = detail::ToShortestDigitsBySearch(x);
+    ASSERT_EQ(searched.digits, expected.digits) << to_string(x);
+    ASSERT_EQ(searched.exponent, expected.exponent) << to_string(x);
+  }
+}
+
+TEST(Charconv, ShortestBySearch) {
+  CheckShortestBySearch<Float<24, 8>>(300, 71);
+  CheckShortestBySearch<binary128>(300, 72);
+  CheckShortestBySearch<binary256>(200, 73);
+  CheckShortestBySearch<binary512>(100, 74);
 }
 
 TEST(Charconv, ExtremesOfBinary512) {

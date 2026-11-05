@@ -120,6 +120,68 @@ TEST(Complex, SpecialValues) {
   EXPECT_TRUE(same(pow(C(F(1), F(1)), C(F(4))), C(F(-4), zero)));
 }
 
+// The rarer branches of the special values: Annex G's recovery of infinities
+// in products and quotients, the hyperbolic functions and exp on infinite and
+// NaN parts, and the inverse functions' remaining cases.
+TEST(Complex, MoreSpecialValues) {
+  using F = binary128;
+  using C = Complex<F>;
+  const F inf = F::Infinity();
+  const F nan = F::QuietNaN();
+  const F zero = F::Zero();
+  const F big = F::MaxFinite();
+  const F half_pi = scalbn(pi<F>(), -1);
+  const auto same = [](const C& a, const C& b) {
+    return SameResult(a.real(), b.real()) && SameResult(a.imag(), b.imag());
+  };
+  // An infinite factor on the right, and products that overflow beside a NaN.
+  EXPECT_TRUE(same(C(F(1), F(1)) * C(inf, nan), C(inf, inf)));
+  EXPECT_TRUE(same(C(nan, big) * C(big, big), C(-inf, inf)));
+  // An infinite dividend over a finite divisor, scaled by its exponent.
+  EXPECT_TRUE(same(C(inf, nan) / C(F(2), F(2)), C(inf, -inf)));
+  // proj leaves finite values alone.
+  EXPECT_TRUE(same(proj(C(F(1), -zero)), C(F(1), -zero)));
+  // sinh and cosh with an infinite real part, by sinh(-z) = -sinh(z) for a
+  // negative one.
+  EXPECT_TRUE(same(sinh(C(inf, F(1))), C(inf, inf)));
+  EXPECT_TRUE(same(sinh(C(-inf, F(1))), C(-inf, inf)));
+  EXPECT_TRUE(same(cosh(C(-inf, F(1))), C(inf, -inf)));
+  EXPECT_TRUE(same(sinh(C(inf, nan)), C(inf, nan)));
+  EXPECT_TRUE(same(cosh(C(inf, inf)), C(inf, nan)));
+  // A zero real part with an infinite or NaN imaginary part.
+  EXPECT_TRUE(same(cosh(C(zero, inf)), C(nan, zero)));
+  EXPECT_TRUE(same(sinh(C(zero, nan)), C(zero, nan)));
+  EXPECT_TRUE(same(sinh(C(zero, inf)), C(zero, nan)));
+  EXPECT_TRUE(same(sinh(C(nan, zero)), C(nan, zero)));
+  EXPECT_TRUE(same(sinh(C(nan, F(1))), C(nan, nan)));
+  // exp with an infinite real part.
+  EXPECT_TRUE(same(exp(C(-inf, inf)), C(zero, zero)));
+  EXPECT_TRUE(same(exp(C(-inf, -nan)), C(zero, -zero)));
+  EXPECT_TRUE(same(exp(C(inf, zero)), C(inf, zero)));
+  EXPECT_TRUE(same(exp(C(inf, F(1))), C(inf, inf)));
+  EXPECT_TRUE(same(exp(C(inf, nan)), C(inf, nan)));
+  EXPECT_TRUE(same(exp(C(nan, -zero)), C(nan, -zero)));
+  // log10 of zero and of infinities, through log.
+  EXPECT_TRUE(same(log10(C(zero, zero)), C(-inf, zero)));
+  EXPECT_TRUE(same(log10(C(inf, F(1))), C(inf, zero)));
+  // pow: zero to a positive real power, and a power with an infinite part,
+  // as e^(w log z).
+  EXPECT_TRUE(same(pow(C(zero, zero), C(F(2.5), zero)), C(zero, zero)));
+  EXPECT_TRUE(same(pow(C(F(0.5), zero), C(inf, zero)), C(zero, zero)));
+  // polar with a nonzero angle, each part rounded once.
+  const C p = polar(F(2), F(1));
+  const F ulp = scalbn(F(1), 2 - F::kPrecision);
+  EXPECT_LE(abs(p.real() - F(2) * cos(F(1))), ulp);
+  EXPECT_LE(abs(p.imag() - F(2) * sin(F(1))), ulp);
+  // The inverse functions on NaNs and infinities not covered above.
+  EXPECT_TRUE(same(asinh(C(nan, F(1))), C(nan, nan)));
+  EXPECT_TRUE(same(atanh(C(nan, F(1))), C(nan, nan)));
+  EXPECT_TRUE(same(acosh(C(F(1), nan)), C(nan, nan)));
+  EXPECT_TRUE(same(acos(C(F(1), inf)), C(half_pi, -inf)));
+  EXPECT_TRUE(same(acos(C(nan, F(1))), C(nan, nan)));
+  EXPECT_TRUE(acos(C(inf, nan)).real().is_nan());
+  EXPECT_TRUE(acos(C(inf, nan)).imag().is_inf());
+}
 
 TEST(Complex, MatchesDouble) {
   using F = binary128;

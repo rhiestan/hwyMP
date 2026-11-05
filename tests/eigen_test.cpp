@@ -386,6 +386,19 @@ TEST(EigenComplex, MixedExpressions) {
 }
 
 // The example in README.md.
+TEST(Eigen, NumTraits) {
+  using T = Eigen::NumTraits<binary128>;
+  using C = Eigen::NumTraits<Complex<binary128>>;
+  EXPECT_TRUE(T::infinity().is_inf() && !T::infinity().signbit());
+  EXPECT_TRUE(T::quiet_NaN().is_nan());
+  // Called at run time, as Eigen's printing does.
+  volatile int digits = T::max_digits10();
+  EXPECT_EQ(digits, 36);
+  digits = C::max_digits10();
+  EXPECT_EQ(digits, 36);
+  EXPECT_EQ(C::epsilon(), T::epsilon());
+}
+
 TEST(Eigen, ReadmeExample) {
   using Matrix =
       Eigen::Matrix<mpfix::binary256, Eigen::Dynamic, Eigen::Dynamic>;

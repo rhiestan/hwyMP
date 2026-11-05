@@ -191,6 +191,12 @@ TEST(Boost, StringsAndStreams) {
   in >> read >> nan;
   EXPECT_EQ(read, Num(125));
   EXPECT_TRUE(isnan(nan));
+  // Shortest output with a sign, in capitals, and in hexadecimal.
+  EXPECT_EQ(Num("1e300").str(0, std::ios_base::showpos | std::ios_base::uppercase),
+            "+1E+300");
+  EXPECT_EQ(Num(-0.5).str(0, std::ios_base::showpos), "-0.5");
+  EXPECT_EQ(Num(1).str(0, std::ios_base::fixed | std::ios_base::scientific),
+            "0x1p+0");
 }
 
 TEST(Boost, ComparisonsAndLimits) {
@@ -209,6 +215,13 @@ TEST(Boost, ComparisonsAndLimits) {
   EXPECT_TRUE(Same((L::max)(), Quad::MaxFinite()));
   EXPECT_TRUE(Same(L::denorm_min(), Quad::MinSubnormal()));
   EXPECT_EQ(std::hash<Num>()(Num(0)), std::hash<Num>()(-Num(0)));
+  EXPECT_TRUE(Same((L::min)(), Quad::MinNormal()));
+  EXPECT_EQ(sign(Num(-3)), -1);
+  EXPECT_EQ(sign(Num(0)), 0);
+  EXPECT_EQ(sign(nan), 0);
+  Num a = 1, b = 2;
+  swap(a, b);
+  EXPECT_TRUE(a == 2 && b == 1);
 }
 
 TEST(Boost, ExpressionTemplates) {

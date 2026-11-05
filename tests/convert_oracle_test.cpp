@@ -806,6 +806,31 @@ TEST(ConvertOracle, ShortestLowSubnormals) {
   CheckShortestLowSubnormals<binary512>();
 }
 
+// binary128 values far from 1 whose rounding interval ends, at the scale of
+// the fast path, lie within 2^-70 of integers: found from the continued
+// fractions of 2^k / 10^t. The fast path cannot decide them, and the binary
+// search gives their digits.
+TEST(ConvertOracle, ShortestHardCases) {
+  constexpr limb_t kCases[][2] = {
+      {0x538f3fbf2c384ac7ULL, 0x3c6630d5ad8ff3a0ULL},
+      {0x5390663800b50742ULL, 0x2ade8938ffd2b8a1ULL},
+      {0x53a08e436c27f04dULL, 0xa0d2ff0e798827abULL},
+      {0x53a870bdf126fabfULL, 0xa973dff25d4ad556ULL},
+      {0x2c7064c5211d91a4ULL, 0x119e870bc2985525ULL},
+      {0x2c7264681ea828daULL, 0xad3b357199d0bb45ULL},
+      {0x2c7664a240318a58ULL, 0x8bf94871f34d7b71ULL},
+      {0x2c7764a240318a58ULL, 0x8bf94871f34d7b71ULL},
+  };
+  for (const auto& bits : kCases) {
+    const binary128 x = binary128::from_bits({bits[1], bits[0]});
+    detail::Decimal fast;
+    EXPECT_FALSE(
+        detail::ToShortestDigitsFast<detail::Working<binary128>>(x, fast))
+        << Hex(x);
+    EXPECT_TRUE(CheckShortest(x));
+  }
+}
+
 TEST(ConvertOracle, ShortestExhaustively) {
   using Small = Float<8, 5>;
   for (limb_t bits = 0; bits < (limb_t{1} << 13); ++bits) {
